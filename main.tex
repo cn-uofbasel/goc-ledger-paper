@@ -1,0 +1,545 @@
+\documentclass[9pt, oneside]{article}   	% use "amsart" instead of "article" for AMSLaTeX format
+\usepackage{geometry}                		% See geometry.pdf to learn the layout options. There are lots.
+\geometry{a4paper}                   		% ... or a4paper or a5paper or ... 
+%\geometry{landscape}                		% Activate for rotated page geometry
+%\usepackage[parfill]{parskip}    		% Activate to begin paragraphs with an empty line rather than an indent
+\usepackage{graphicx}				% Use pdf, png, jpg, or eps§ with pdflatex; use eps in DVI mode
+								% TeX will automatically convert eps --> pdf in pdflatex		
+\usepackage{amssymb}
+\usepackage{dsfont}
+\usepackage{algorithm}
+\usepackage[noend]{algpseudocode}
+\usepackage{amsthm}
+\usepackage{hyperref}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+
+
+
+\title{Eventually-Consistent Ledgers}
+\author{Erick Lavoie}
+%\date{March, 13, 2023}							% Activate to display a given date or no 
+
+\begin{document}
+\maketitle
+
+
+\begin{abstract}
+It is commonly assumed that electronic asset transfers should require that the amount sent from an account be exactly equal to the amount received in another account \textit{immediately after every transaction}.  In this paper, we show instead that weaker invariants are sufficient to enable eventually-consistent electronic asset transfers, namely that 1) the positive contribution of a sender $S$ to a receiver $R$'s balance shall always be less or equal than the total amount ever sent by $S$ to $R$ and 2) the equality only needs to hold \textit{eventually}.
+
+We present a state-based conflict-free replicated ledger leveraging these invariants and prove its convergence as well as the safety and liveness of the resulting account balances. We show that our design is sufficient in crash-stop, crash-recovery, and fail-silent system models. We finally highlight open challenges that arise in adversarial (Byzantine) settings. 
+
+We envision applications using eventually-consistent ledgers to complement the existing financial and blockchain infrastructure by offering faster and more affordable small transactions between trusting parties, while the existing infrastructure will still be required for larger transactions between untrusting parties.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:introduction}
+
+\section{Eventually-Consistent Ledgers}
+
+In this section, we present the design of eventually-consistent ledgers in two parts: we present eventually-consistent \textit{accounts} (Section~\ref{sec:account}) and then the eventually-consistent \textit{ledgers} proper (Section~\ref{sec:ledger}). We present the state and operations on both accounts and ledgers at a high-level to outline a \textit{family} of designs that are eventually-consistent: this will pave the way for a discussion of design dimensions (Section~\ref{sec:design-issues}) that can turn this high-level design into concrete implementations. Our notation and conventions are explained as they are introduced and collected in Appendix~\ref{apdx:notation}.
+
+\subsection{Account}
+\label{sec:account}
+
+Account replicas track the current balance of tokens for a given owner identified by their \textit{identifier}, shorten as $id$. A replica of an account belonging to owner $id$ is created with \texttt{initialize} (Alg.~\ref{alg:account}). The state of an account is decomposed into multiple internal counters such that all counters are \textit{monotonically increasing}, \textit{i.e.}, every operation leaves counters either unchanged or larger. 
+
+Before explaining what each internal counter is, we give an overview of account operations. Each owner can  \textit{create} new tokens, if they have the capability; \textit{burn} tokens they own; and transfer some or all their tokens to other accounts, identified by different $id$s. This is similar to existing crypto-token designs, such as (CITE). In contrast to the previous examples, we split the transfer into two operations: the sender \textit{gives} tokens to a receiver account, which immediately decreases the balance of the sender; however, the balance of the receiver is only increased after an explicit \textit{acknowledgement}. This decomposition enables the reception of tokens to be tracked as a separate event: this allows, for example, other replicas to check if the receiver account has received (and accepted) the tokens.\footnote{It is possible to always automatically acknowledge the reception of tokens immediately upon reception and not expose the acknowledgment operation to the user. However, having the operation be performed explicitly also gives the opportunity to the receiver to ignore tokens sent to them, which might be useful in some context. We therefore prefer the explicit operation.}. The implementation of operations follows from both principles, with each operation modifying separate internal counter(s). We now describe each in more detail.
+
+The \texttt{create} operation takes the current state of an account $A$ and a requested \textit{amount} then returns a new state $A'$.\footnote{A practical implementation may actually encapsulate the state of an account in an object and modify it in place. We explicitly associate the different states to different variables to make the labels of the states in proofs (Section~\ref{sec:proofs}) easier to relate to the implementation.} If the owner of the account is allowed to create tokens, \textit{i.e.} the identifier of their account is in the set of allowed creators $\mathds{C}$, the internal counter $A'_\uparrow$ which tracks the number of created tokens, is the sum of the previous number of tokens and \textit{amount}. This has the effect of increasing the balance of $A$ by \textit{amount}. Otherwise, the counter is unchanged ($A'_\uparrow=A_\uparrow$). The set of allowed creator identifiers might be distributed to replicas beforehand or enforced through cryptographic mechanisms. 
+
+The \texttt{burn} operation is similar to \texttt{create} with an opposite effect on the balance: it takes the current state of an account $A$ and a requested \textit{amount} then returns a new state $A'$, possibly increasing the internal counter $A'_\downarrow$ that tracks the number tokens ever burned. However, the implementation of burn differs from that of create in two aspects: 1) any account is allowed to burn tokens; 2) $A'_\downarrow$ is increased only if there are enough tokens to burn the requested amount, \textit{i.e.} the \texttt{balance} is greater than the requested amount. 
+
+Both aspects deserve more scrutiny. First, restricting burning tokens to a set of identifiers would also be possible. However, the restriction would not be effective unless transfer operations were also restricted to only valid addresses,\footnote{Giving to an invalid or unused address effectively makes the tokens unavailable, similar to burning.} which in turn would require tracking the set of valid accounts. We therefore take the simpler and more open approach of allowing any account to burn tokens. Second, checking the balance prior to burning is not sufficient in itself to prevent account balances to go negative, because two concurrent burn and give operations may each have a sufficient balance to complete but may together decrease the balance, after the state of both replicas is merged, by more than there were tokens available.\footnote{Perhaps surprisingly, if there were no transfers, concurrent burns would never result in a negative balance because only the largest burnt amount, which was locally valid, would be retained instead of the sum of all burnt amounts. See the merge operation in Alg.~\ref{alg:account-ordering}.} Whether balances should be allowed to go negative has to be balanced against other issues, which we discuss in more detail further in Section~\ref{sec:design-neg-balance-choice}.
+
+The \texttt{giveTo} operation sends \textit{amount} tokens from account $A$ to the recipient account associated to $id$, resulting in a new state $A'$. The account state tracks the total amount ever sent using the dictionary $A_{\leftarrow}$ with the value of a monotonic counter associated to $id$ stored under key $A_{\rightarrow}[id]$. This counter is only increased if the local balance is higher or equal than the \textit{amount} sent.
+
+The \texttt{ackFrom} operation acknowledges the reception of tokens from account $B$ by account $A$ if any, resulting in new state $A'$. The implementation simply takes the maximum value of the tokens sent $B_{\rightarrow A_{\tiny \textbf{id}}}$ and the previously acknowledged tokens $A_{\leftarrow B_{\tiny \textbf{id}}}$. At all times the former is strictly equal or larger than the latter.
+
+The \texttt{balance} of an account $A$ performs additions and subtractions on counters corresponding to individual operations to compute the total balance of an account. It does not modify the state of the account. The implementation first computes the \textit{debits}, \textit{i.e.} the sum of the amounts that increase the balance: that corresponds to the number of created tokens and the sum of the tokens acknowledged from all other accounts. Second, it computes the \textit{credits}, \textit{i.e.}, the sum of the amounts that decrease the balance: that is the number tokens burnt and the sum of tokens given to all other accounts. The total is the difference between the \textit{debits} and the \textit{credits}.
+
+The last operation, \texttt{unackedFrom} computes whether tokens sent from account $B$ have not yet been acknowledged by account $A$. It does not modifies the state of $A$ nor $B$. This is implemented by subtracting the tokens acknowledged by $A$ from $B$, from the tokens sent by $B$ to $A$. If the result is greater than zero, there are unacknowledged tokens.
+
+\begin{algorithm}
+\begin{algorithmic}[1]
+   \State \textbf{Require} $\mathds{C}$, the set of identifiers allowed to create tokens
+   \State
+   \Function{initialize}{\textit{id}}
+    	\State $A_{\scriptsize\textbf{id}} \leftarrow id$
+	\State $A_\uparrow ~\leftarrow 0$       \Comment{Created amount}
+	\State $A_\downarrow ~\leftarrow 0$   \Comment{Burned amount}
+	\State $A_\rightarrow \leftarrow \{ \}$ \Comment{GivenTo: Dictionary of $\textit{id}$s associated to $\textit{amount}$s}
+	\State $A_\leftarrow \leftarrow \{ \}$ \Comment{AckFrom: Dictionary of $\textit{id}$s associated to  $\textit{amount}$s}
+    	\State \Return $A$
+    \EndFunction
+    \State
+    \Function{create}{$A,\textit{amount}$} \Comment{\textit{amount} is assumed to be positive for all operations}
+        \State $A'' \leftarrow \textit{copy}(A)$ \Comment{Deep copy}
+    	\If{$A_{\scriptsize\textbf{id}} \in \mathds{C}$} 
+		 \State $A''_\uparrow \leftarrow A_\uparrow + \textit{amount}$ 
+	\EndIf
+	\State \Return $A''$
+    \EndFunction
+    \State
+     \Function{burn}{$A,\textit{amount}$}  
+        \State $A'' \leftarrow \textit{copy}(A)$
+    	\If{$\texttt{balance}(A) \geq \textit{amount}$} \label{ln:burn-balance-check}
+		 \State $A''_\downarrow \leftarrow A_\downarrow + \textit{amount}$ 
+	\EndIf
+	\State \Return $A''$
+    \EndFunction
+    \State
+    \Function{giveTo}{$A,\textit{amount}, \textit{id}$}  
+        \State $A'' \leftarrow \textit{copy}(A)$
+    	\If{$\texttt{balance}(A) \geq \textit{amount}$}  \label{ln:give-balance-check}
+		\If{$id \notin A_\rightarrow [id]$}
+			\State $A''_{\rightarrow}[id] \leftarrow \textit{amount}$ 
+		\Else
+		         \State $A''_{\rightarrow}[id] \leftarrow A_{\rightarrow}[id] + \textit{amount}$ 
+		\EndIf
+	\EndIf
+	\State \Return $A''$
+    \EndFunction
+    \State
+    \Function{ackFrom}{$A, B$}
+        \State $A'' \leftarrow \textit{copy}(A)$
+        \If{$A_{\scriptsize\textbf{id}} \in B_{\rightarrow *}$}
+		\If{$B_{\scriptsize\textbf{id}} \notin A_{\rightarrow *}$}
+			 \State $A''_{\leftarrow}[B_{\scriptsize\textbf{id}}] \leftarrow B_{\rightarrow}[A_{\scriptsize\textbf{id}}]$
+		\Else
+			 \State $A''_{\leftarrow}[B_{\scriptsize\textbf{id}}] \leftarrow \texttt{max}(A_{\leftarrow}[B_{\scriptsize\textbf{id}}], B_{\rightarrow}[A_{\scriptsize\textbf{id}}])$ 
+		\EndIf
+        \EndIf
+	\State \Return $A''$
+    \EndFunction
+    \State
+        \Function{balance}{A}
+        \State $\textit{debits} \leftarrow A_\uparrow + \sum\limits_{id \in A_{\leftarrow *}} A_{\leftarrow}[id]$ 
+        \Comment{Keys of $A_\leftarrow$ written $A_{\leftarrow *}$}
+        \State $\textit{credits} \leftarrow A_\downarrow + \sum\limits_{id \in A_{\rightarrow *}} A_{\rightarrow}[id]$
+        \Comment{Keys of $A_\rightarrow$ written $A_{\rightarrow *}$}
+        \State \Return $\textit{debits} - \textit{credits}$
+    \EndFunction
+    \State
+    \Function{unackedFrom}{$A, B$}
+        \State \Return $B_{\rightarrow A_{\tiny\textbf{id}}} - A_{\leftarrow B_{\tiny\textbf{id}}}$
+    \EndFunction
+    \end{algorithmic}
+\caption{\label{alg:account} Account: State and Operations}
+\end{algorithm}
+
+The next two operations, shown in Algorithm~\ref{alg:account-ordering}, respectively establish a partial order between the different states of replicas, and enable merging different states, possibly modified concurrently, to obtain a new state.
+
+The \texttt{compare} operation for account states $A$ and $A'$ returns true if the state of account $A$ is smaller or equal than that of account $A'$, written $A \leq_A  A'$. This is the case if and only if the set of identifiers for given and acknowledged tokens of $A$ are subsets of those $A'$ \textit{and} every counter of $A$ are smaller or equal to the corresponding counters in $A'$. Note that counters in $A'$ not present in $A$ have no effect. This enables comparing the state of two accounts to see if $A'$ is more up-to-date than $A$, in which case $A \leq_A  A'$, or if $A$ and $A'$ are the result of concurrent modifications, in which case both $A \nleq_A A'$ and $A' \nleq_A A$ (are false).
+
+The \texttt{merge} operation between account states $A$ and $A'$ returns a new account state $A''$ that is the smallest state according to $\leq_A$ that is also larger than both $A$ and $A'$, written $A'' = A \sqcup A'$. It is implemented by 1) taking the union of all the keys (identifiers) on both $A_\rightarrow$ and $A'_\rightarrow$ into $A''_\rightarrow$, and similarly on $A_\leftarrow$ and $A'_\leftarrow$ into $A''_\leftarrow$; and 2) taking the maximum value of all internal counters if present on both $A$ and $A'$, otherwise either the value of $A$ or $A'$ whichever exists. This is useful, for example to update the state of a local replica so that it eventually incorporates all the changes that have happened on other remote replicas.
+
+%As discussed previously, two concurrent \texttt{giveTo} operations happening on different replicas may  modify counters for different identifiers $id$ and $id'$, each with a sufficient balance. However, merge the updated states may result in a negative balance because the sum of the amounts given in both cases, tracked by different counters, results in a larger amount given than was available prior to both. Nonetheless, eventually all replicas will converge to the same balance, even if negative. We discuss in Section~\ref{sec:design-neg-balance-choice} some choices available to implementers.
+
+The account we just presented is a Conflict-Free Replicated Data Type~\cite{shapiro:hal-00932836} (see Theorem~\ref{th:account-crdt}, Section~\ref{sec:proofs}) because all replicas are guaranteed to converge to the same state eventually. However, concurrent updates may result in a negative balance (Fig~\ref{fig:account-negative-bal}). That being said, \textit{only concurrent updates} may result in a negative balance: if all updates are sequential, the sufficient balance pre-condition on all operations that decrease the balance (Alg.~\ref{alg:account}, line~\ref{ln:burn-balance-check} and \ref{ln:give-balance-check}) otherwise prevents the balance from going negative. We discuss some of the design dimensions available for system designers in Section~\ref{sec:design-neg-balance-choice}, that make the problem less of an issue than it might appear at first.
+
+\begin{algorithm}
+\begin{algorithmic}[1]
+    \Function{$\leq_A$}{$A$, $A'$} \Comment{Compare}
+        \State $\textit{created} \leftarrow A_\uparrow \leq A'_\uparrow$
+        \State $\textit{burned} \leftarrow A_\downarrow \leq A'_\downarrow$
+        \State $\textit{given} \leftarrow A_{\rightarrow *} \subseteq A'_{\rightarrow *}$ ~\textbf{and}~ $\bigwedge\limits_{id \in A_{\rightarrow *}} A_{\rightarrow}[id] \leq A'_{\rightarrow}[id]$ \Comment{Keys of $A_\rightarrow$ written $A_{\rightarrow *}$}
+        \State $\textit{acked} \leftarrow A_{\leftarrow *} \subseteq A'_{\leftarrow *}$ ~\textbf{and}~ $\bigwedge\limits_{id \in A_{\leftarrow *}} A_{\leftarrow}[id] \leq A'_{\leftarrow}[id]$
+        \State \Return $\textit{created}$ \textbf{and} $\textit{burned}$ \textbf{and} $\textit{given}$ \textbf{and} $\textit{acked}$
+    \EndFunction
+    \State
+    \Function{$\sqcup_A$}{$A$, $A'$} \Comment{Merge}
+        \State $A'' \leftarrow \textit{copy}(A)$ \Comment{Deep copy}
+        \State $A''_\uparrow \leftarrow \texttt{max}(A_\uparrow, A'_\uparrow)$
+        \State $A''_\downarrow \leftarrow \texttt{max}(A_\downarrow, A'_\downarrow)$ 
+        \State
+	\For{$id ~\textbf{in}~ A'_{\rightarrow *}$}
+		\If{$id \in A_{\rightarrow *}$}
+			\State $A''_{\rightarrow}[id] \leftarrow \texttt{max}(A_{\rightarrow}[id], A'_{\rightarrow}[id])$
+		\Else
+			\State $A''_{\rightarrow}[id] \leftarrow A'_{\rightarrow}[id]$
+		\EndIf
+	\EndFor
+	\State
+	\For{$id ~\textbf{in}~ A'_{\leftarrow *}$}
+		\If{$id \in A_{\leftarrow *}$}
+			\State $A''_{\leftarrow}[id] \leftarrow \texttt{max}(A_{\leftarrow}[id], A'_{\leftarrow}[id])$
+		\Else
+			\State $A''_{\leftarrow}[id] \leftarrow A'_{\leftarrow}[id]$
+		\EndIf
+	\EndFor
+	\State
+	\State \Return $A''$	
+    \EndFunction
+\end{algorithmic}
+\caption{\label{alg:account-ordering} Account: Ordering and Merging}
+\end{algorithm}
+
+
+
+
+\begin{figure}
+
+\caption{Concurrent updates may lead to a negative account balance.}
+\label{fig:account-negative-bal}
+\end{figure}
+
+
+\subsection{Ledger}
+\label{sec:ledger}
+
+Ledgers replicas track the most up-to-date state of a set of accounts. They are essentially implemented as a grow-only dictionary of account replicas (Alg~\ref{alg:ledger}), so the implementation of state and operations is straight-forward.
+
+\begin{algorithm}
+\begin{algorithmic}[1]
+   \Function{initialize}{}
+    	\State $L \leftarrow \{ \}$ \Comment{Dictionary of $\textit{id} \rightarrow \textit{accounts}$ }
+    	\State \Return $L$
+    \EndFunction
+    \State
+    \Function{add}{L, A}
+        \State $L' \leftarrow \textit{copy}(L)$ \Comment{Deep copy}
+    	\If{$A_{\scriptsize\textbf{id}} \notin L_*$}
+		\State $L'[A_{\scriptsize\textbf{id}}] \leftarrow A$
+	\Else
+		\State $L'[A_{\scriptsize\textbf{id}}] \leftarrow L[A_{\scriptsize\textbf{id}}] \sqcup_A A$ \Comment{$\sqcup_A$ definition in Alg.~\ref{alg:account-ordering}}
+	\EndIf
+	\State \Return $L'$
+    \EndFunction
+    \State
+    \Function{$\leq_L$}{$L$, $L'$} 
+    	\State \Return $L_* \subseteq L'_*$ ~\textbf{and}~ $\bigwedge_{id \in L_*} L[id] \leq_A L'[id]$ \Comment{$\leq_A$ definition in Alg.~\ref{alg:account-ordering}}
+    \EndFunction
+    \State
+    \Function{$\sqcup_L$}{$L$, $L'$}
+        \State $L'' \leftarrow \textit{copy}(L)$
+	\For{$id ~\textbf{in}~ L'[id]$}
+		\If{$id \notin L_*$}
+			\State $L''[id] \leftarrow L'[id]$
+
+		\Else
+			\State $L''[id] \leftarrow  L[id] \sqcup_A L'[id]$  \Comment{$\sqcup_A$ definition in Alg.~\ref{alg:account-ordering}}
+		\EndIf
+	\EndFor
+	\State \Return $L''$	
+    \EndFunction
+    \State
+    \Function{balances}{L} \Comment{$L_{id}$ returns the account associated to $id$ in $L$}
+        \State \Return $\{~ id \rightarrow \texttt{balance}(L[id]) \textbf{~for~} id ~\textbf{in}~ L_* ~\}$  \Comment{$L_*$ returns the set of ids in $L$}
+    \EndFunction
+\end{algorithmic}
+\caption{\label{alg:ledger} Ledger}
+\end{algorithm}
+
+The \texttt{initialize} operation creates a new dictionary $L$ representing the ledger. The \texttt{balances} operation returns the balance of account replicas stored in $L$, in a new dictionary also indexed by account identifiers. 
+
+The \texttt{add} operation adds a new account replica in $L$, returning a new dictionary $L'$. If account $A$ is not already present in $L$, it creates a new entry with a key corresponding to $A$'s identifier and the state of $A$ as a value. Otherwise, it merges the state of account $A$ with the state of the stored replica in $L$ with the same identifier, updating the ledger in the process.
+
+The \texttt{compare} operation for ledger states $L$, and $L'$ returns true if the state of $L$ is smaller or equal than the state of $L'$, written $L \leq_L L'$. It does not modify the state of either $L$ or $L'$. \texttt{compare} is true if and only if, $L$ keys are a subset of keys in $L'$ and that every account associated to the keys ($id$s) in $L$ is smaller than the same account in $L'$, using the \texttt{compare} operation for accounts ($\leq_A$).
+
+The \texttt{merge} operation between ledger states $L$ and $L'$ returns a new ledger state $L''$ that is the smallest state according to $\leq_L$ that is also larger than both $L$ and $L'$, written $L'' = L \sqcup_L L'$. It is implemented by taking 1) the union of all keys (identifiers) on both $L$ and $L'$ and 2) associating each keys to the most up-to-date corresponding account state. The second is implemented with the merge operation on accounts ($\sqcup_A$, Alg.~\ref{alg:account-ordering}) if the account is present in both states, otherwise taking state of the account either $L$ or $L'$.
+
+
+This ledger design is also a Conflict-Free Replicated Data Type [1] (see Theorem~\ref{th:ledger-crdt}, Section~\ref{sec:proofs}) because all replicas are guaranteed to converge to the same state eventually. To the exception of the possibility that accounts may have negative balance, there is no additional issue related to concurrency: any concurrent account updates will result in a valid ledger. Moreover, this is the case whichever design choices are made regarding accounts.
+
+
+\section{Design Dimensions}
+\label{sec:design-issues}
+
+In this section, we outline the design space for eventually-consistent ledgers. We sketch the general design directions but in all cases, we leave specific implementation details out to be covered in future papers.
+
+\subsection{Who can create tokens?}
+
+The design we presented, and the invariant we prove later, are compatible with different restrictions for token creation. For example:
+\begin{itemize}
+	\item \textit{All accounts}: The creation of a given token type may also be enabled for all accounts. However, this design point \textit{a priori} does not look interesting since any account might create an arbitrarily large amounts which would devalue all other tokens in circulation.
+	\item \textit{Single account}: The creation of tokens can only be done by a single account, by linking the token type to the account identifier;
+	\item \textit{Small number of accounts}: The creation of tokens can be done by a subset of accounts $\mathds{C} \subset \mathds{A}$, presumably with $\mathds{C}$ significantly smaller than $\mathds{A}$. This enables concurrent creation of tokens, maintaining liveness when some accounts might other otherwise be unavailable for updates.
+\end{itemize}
+
+It is possible to enforce that creation can happen only from a single or a small number of account using basic cryptographic primitives.
+
+%In all cases, the same system may deal with multiple concurrent ledgers with different creators for each, so restrictions on the ability of most identifiers to create tokens in a given ledger do not prevent any identifier to create new tokens in other ledgers. Ultimately the value of any tokens created derives from the trust-worthiness of their creator and the willingness of users to accept them~\cite{lavoie2022localcryptotokens}.
+
+\subsection{Can balances be temporarily negative?}
+\label{sec:design-neg-balance-choice}
+
+The balance of an account might be required to stay strictly positive at all times or might be allowed to become negative during some concurrent updates. In both cases, the design we presented ensures that all replicas converge eventually to the same state, even if it is to a negative balance. We outline the impact on the rest of the design of either choice.
+
+\subsubsection{The balance should be strictly positive at all times}
+
+If \texttt{burn} or \texttt{giveTo} operations should never result in a negative balance, then state modifications to every account should be sequential (see Theorem~\ref{proof:positive-bal-seq-order}). A sequential ordering may be obtained through different mechanisms:
+\begin{itemize}
+    \item \textit{Consensus}: Using some form of agreement protocol between replicas to order updates consistently;
+    \item \textit{Master state}: By storing the latest state of the account on a single device (ex: usb key or hardware token) and requiring any replica to update it after every operation;
+    \item \textit{Single replica}: By enforcing that modifications can only be issued by a unique replica (device). A physical person may still control multiple accounts but each account should be linked to a single replica.
+\end{itemize}
+
+Any other mechanism is also possible as long as no concurrent state updates are possible.
+
+\subsubsection{The balance may be negative sometimes}
+
+If \texttt{burn} or \texttt{giveTo} operations may sometimes result in a negative balance during concurrent updates, then general complementary strategies are still possible:
+\begin{itemize}
+	\item \textit{Allow updates with small amounts compared to the balance}: In that case, the probability that there would be a sufficient number of concurrent small updates that would result in a negative balance is small and therefore in most likelihood future merges will result in a positive balance. This approach increases \textit{availability} (liveness) of the system will limited additional complexity;
+	\item \textit{De-incentivize with negative reputation}: For example, reporting the number of times and the cumulative negative account balance over the lifetime of an $id$ will alert other participants that the $id$, and associated accounts, are less trust-worthy than others and should be de-prioritized during exchanges. This approach increases the trust of users (\textit{safety}) in the system;
+	\item \textit{Incentivize and even enforce a positive balance to participate}: For example, a platform using eventually-consistent ledgers may degrade and even refuse services to an identifier $id$ unless their associated account is positive;  This approach also increases the trust of users (\textit{safety}) in the system;
+\end{itemize}
+
+In all previous cases, the service should allow an account to receive additional tokens \textit{after} its balance became negative in order to restore its positive state. 
+
+The failure to implement negative feedback mechanisms as above, without the ability to prevent account owners from spending more tokens than they have, would most likely result in the devaluation of all tokens and the lost of trust in the system. We therefore recommend implementing at least \textit{some} negative feedback mechanism.
+
+\subsection{Who manages the replicas?}
+
+\begin{itemize}
+	\item \textit{A single organization} \textit{(centralized)}
+	\item \textit{A multiple organizations}  \textit{(federated)}
+	\item \textit{End-users} \textit{(peer-to-peer)}
+\end{itemize}
+
+\section{Proofs}
+\label{sec:proofs}
+
+\subsection{Convergence}
+
+To establish convergence, we need to show three things~\cite{shapiro:hal-00932836}: First, that all possible states can be organized in a semi-lattice $\mathds{L}$ ordered by $\leq$. This is a requisite for the next two properties. Second, that merging two states $D$ and $D'$ computes the \textit{Least Upper Bound} (LUB) of $D$ and $D'$ in $\mathds{L}$ . This ensures that the merge is \textit{commutative}, \textit{associative}, and \textit{idempotent}, according to algebra, providing \textit{safety}, \textit{i.e.} that replicas will agree on the final state regardless of ordering, delays, or duplication of merge operations. Third, that all operations modify the state of a replica such that the new state $D'$ is either equal or larger than the previous state $D$ in $\mathds{L}$ (\textit{monotonicity}): this ensures \textit{liveness}, \textit{i.e.}, that any operation will induce potential changes on a replica that are going to be eventually replicated on all other replicas. 
+
+Because an account state is the composition of state-based grow-only sets and max-counters, two simple and well-known CRDTs~\cite{shapiro:inria-00555588}. The proof easily follows from the composition of both. While straight-forward, we do explicit the different steps to serve as a pedagogical example for students and developers with otherwise little experience with proof techniques.
+
+Note that because all replicas converge to the same state does not mean that the balances on all replicas are always positive for any possible concurrent operations. We therefore discuss safety properties related to the balance separately later on in Section~\ref{sec:proof:balance}.
+
+\begin{theorem}
+\label{th:account-crdt}
+The account design of Algorithm~\ref{alg:account} and \ref{alg:account-ordering} is a state-based  conflict-free replicated data type.
+\end{theorem}
+
+\begin{proof}
+We prove the following three lemmas, \textit{ordering}, \textit{least upper bound}, and \textit{monotonicity}, which together establish our proof.
+
+\begin{lemma}
+Ordering: All possible states of an account are organized in a semi-lattice $\mathds{L}_A$  ordered by \texttt{compare} ($\leq_A$).
+\end{lemma}
+\begin{proof}
+ \texttt{Compare} for account states $A$ and $A'$ ($\leq_A$, Alg~\ref{alg:account-ordering}) establishes a partial order that is the conjunction of the properties of partial ordering of Grow-Only Sets and the total ordering of Max-Counters: given an account with states $A$ and $A'$, $A$ is smaller or equal than $A'$ ($A \leq_A A'$) if and only if all of the followings are true: 
+ \begin{enumerate}
+     \item \textit{created:} The counter for the number created tokens of $A$ is smaller or equal than that for $A'$ ($A_\uparrow \leq A'_\uparrow$);
+     \item \textit{burned}: The counter for the number burned tokens of $A$ is smaller or equal than that for $A'$ ($A_\downarrow \leq A'_\downarrow$);
+     \item \textit{given (ids)}: The set of identifiers that $A$ gave tokens to is smaller or equal to those that $A'$ gave to ($A_{\rightarrow *} \subseteq A'_{\rightarrow *}$); 
+     \item \textit{given (counters)}: For each $id$ in both $A_{\rightarrow}$ and $A_{\rightarrow *}'$, the counter for $id$ in $A_{\rightarrow}$ is smaller or equal than the counter for $id$ in $A_{\rightarrow}'$ ($A_{\rightarrow}[id] \leq A_{\rightarrow}'[id]$);
+      \item \textit{acked (ids)}: The set of identifiers that $A$ acknowledged receiving tokens from is smaller or equal to those that $A'$ acknowledged receiving tokens from ($A_{\leftarrow *} \subseteq A'_{\leftarrow *}$); 
+     \item \textit{acked (counters)}: For each $id$ in both $A_{\leftarrow}$ and $A_{\leftarrow *}'$, the counter for $id$ in $A_{\leftarrow}$ is smaller or equal than the counter for $id$ in $A_{\leftarrow}'$ ($A_{\leftarrow}[id] \leq A_{\leftarrow}'[id]$).
+ \end{enumerate}
+ 
+ Conditions (1,2,4,6) correspond to the total order of Max-Counters. Conditions (3,5) correspond to the partial order of Grow-Only Sets. All stateful fields of an account participate in the ordering and all of them are ordered partially or totally.
+ 
+Moreover, the subset relationship ($\subseteq$) is defined for all possible identifiers which can be keys to dictionaries, and the less-or-equal relationship ($\leq$) is defined for all integers, which can be counters for each element. 
+
+Therefore, the relationship defined by \texttt{compare} ($\leq_A$) forms a semi-lattice $\mathds{L}_A$ on all possible states of an account.
+\end{proof}
+
+\begin{lemma}
+Least-Upper Bound (LUB): Merging any possible account states $A$ and $A'$ computes the LUB of $A$ and $A'$ according to $\mathds{L}_A$ .
+\end{lemma}
+
+\begin{proof}
+\texttt{Merging} two states $A, A'$ returning a new state $A''$ is the composition of the merge behaviour of Grow-Only Sets and Max-Counters: 
+\begin{enumerate}
+  \item $A_{\leftarrow *}''= (A_{\leftarrow *} \cup A_{\leftarrow *}')$ and is a least upper bound of $A_{\leftarrow *}$ and $A_{\leftarrow *}'$ because set-union $\cup$ is the least-upper bound on sets ordered by the subset relationship ($\subseteq$);\footnote{$S'=S_1 \cup S_2$ is the least upper bound on $S_1$ and $S_2$ ordered by the subset relationship because any $S'' \subset S'$ could not be an upper bound on both $S_1$ and $S_2$ because it would miss one element from either or both. $S'=S_1 \cup S_2$ is therefore the smallest set that is simultaneously greater than both $S_1$ and $S_2$, that is a least upper bound.}
+  \item \textit{idem} for $A_{\rightarrow *}$ and $A'_{\rightarrow *}$.
+  \item For each $id \in A_{\leftarrow *}''$, $A_{\leftarrow *}''[id]=\textit{max}(A_{\leftarrow *}[id], A_{\leftarrow *}'[id])$ and is a least upper bound of $A_{\leftarrow *}[id]$ and  $A_{\leftarrow *}'[id]$ because the maximum value of two integers is the least upper bound on integers ordered by $\leq$.\footnote{$k=\textit{max}(i,j)$ is the least upper bound on integers ordered by $\leq$ because any $k' < k$ is smaller than either $i$, $j$ or both and therefore cannot be an upper bound of both $i$ and $j$ simultaneously. $k=\textit{max}(i,j)$ is therefore the smallest integer that is simultaneously larger or equal to both $i$ and $j$, that is a least upper bound.}  
+  \item \textit{idem} for $A_{\leftarrow *}$ and $A'_{\leftarrow *}$.
+ \end{enumerate} 
+  $A''$ being the combination of the four, it is therefore a least upper bound of accounts with states $A$ and $A'$ in $\mathds{L}_A$. 
+
+Computing the union is defined for all possible sets of identifiers and always results in a set of identifiers that is also ordered by $\mathds{L}_A$ . Computing the maximum value of integers is defined for all integers (including the range $[0, \infty[$  that is actually used for counters) and always results in a new counter value that is also ordered in $\mathds{L}_A$. The merge operation is therefore defined for all possible states and computes the least upper bound of two account states $A$ and $A'$.
+\end{proof}
+
+\begin{lemma}
+\textit{Monotonicity}: All operations for any possible combination of arguments and states result in a new state $A''$ for an account such that $A''$ is either equal or larger than the previous state(s) $A$ (or $A$ and $A'$) in $\mathds{L}_A$.
+\end{lemma}
+
+\begin{proof}
+Operations in Alg~\ref{alg:account} potentially modifying the state of an account are monotonic for the following reasons (excluding \texttt{initialize} because it creates a new replica so need not be monotonic). The condition(s) of $\texttt{compare}_A$ that are impacted by possible state(s) changed by the operation are mentioned between parentheses:
+\begin{enumerate}
+	\item \texttt{create}$(A,\textit{amount})$ because it can only grow (or leave unchanged) the number of created tokens, \textit{i.e.}, $A_\uparrow$, $(A'_{\uparrow} = A_{\uparrow}  ~\textit{or}~ (A_{\uparrow}  + \textit{amount})) \geq A_{\uparrow} $ (Alg.\ref{alg:account-ordering} \textit{created}); 
+	\item \texttt{burn}$(A,\textit{amount})$ for the same reason as \texttt{create}, but on $A_\downarrow$ instead (Alg.\ref{alg:account-ordering} \textit{burned});
+	\item \texttt{giveTo}$(A,\textit{amount}, \textit{id})$ because (Alg.\ref{alg:account-ordering} \textit{given}):
+		\begin{itemize}
+			\item if the balance in $A$ is insufficient, it does not change any identifier sets or counters
+			\item otherwise:
+	    			\begin{itemize}
+	       				 \item the set of identifiers $A'_{\rightarrow *} = A_{\rightarrow *}$ if $id \in A_{\rightarrow *}$ already, otherwise $A'_{\rightarrow *} = A_{\rightarrow *} \cup \{ id \}  \supset A_{\rightarrow *}$
+	     				   \item $A'_{\rightarrow}[id] = A_{\rightarrow}[id] + \textit{amount} > A_{\rightarrow}[id]$
+	     				    \item for all other $id' \in A_{\rightarrow *}$ such that $id' \neq id$, $A'_{\rightarrow}[id'] = A_{\rightarrow}[id]$ 
+	     			\end{itemize}
+	   		  \end{itemize}
+	 \item \texttt{ackFrom}$(A,B)$ because (Alg.\ref{alg:account-ordering} \textit{acked}):
+	 	\begin{itemize}
+			\item  if $B_{\scriptsize \textbf{id}}$ has not sent $A$ any token ($A_{\scriptsize\textbf{id}} \notin B_{\rightarrow *}$), no set of identifier or counter is changed;
+			\item otherwise:
+				\begin{itemize}
+					\item if $A$ has never acknowledged tokens from $B$ previously ($B_{\scriptsize\textbf{id}} \notin A_{\rightarrow *}$), then the set of identifiers $A'_{\leftarrow *} = A_{\leftarrow *} \cup \{ id \} \supset A_{\leftarrow *}$
+					\item otherwise $A'_{\leftarrow}[B_{\scriptsize\textbf{id}}] =  \texttt{max}(A_{\leftarrow}[B_{\scriptsize\textbf{id}}], B_{\rightarrow}[A_{\scriptsize\textbf{id}}]) \geq A_{\leftarrow}[B_{\scriptsize\textbf{id}}]$
+				\end{itemize}
+	 	\end{itemize}
+	\item \texttt{Balance} and \texttt{unackedFrom} do not modify the state of $A$.
+\end{enumerate}
+
+Operations in Alg~\ref{alg:account-ordering} are also monotonic for the following reasons:
+\begin{enumerate}
+	\item \texttt{compare}$(A,A')$ ($\leq_A$) does not return a new state
+	\item \texttt{merge}$(A,A')$ returns a new state $A''$ such that $A'' \geq_A A$ and $A' \geq_A A'$ because, following a decomposition according to the boolean conditions in \texttt{compare} (Alg.~\ref{alg:account-ordering}) :
+		\begin{itemize}
+			\item \textit{created}: $A''_\uparrow \geq A_\uparrow$ and $A''_\uparrow \geq A'_\uparrow$ because $A''_\uparrow = \texttt{max}(A_\uparrow, A'_\uparrow)$ 
+			\item \textit{burned}: \textit{idem} as \textit{created} but for $A''\downarrow$ 
+			\item \textit{given}:
+				\begin{itemize}
+					\item $A''_{\rightarrow *} \supseteq A_{\rightarrow *}$ and $A''_{\rightarrow *} \supseteq A'_{\rightarrow *}$ because $A''_{\rightarrow *} = A_{\rightarrow *} \cup A'_{\rightarrow *}$
+					\item for all $id \in A_{\rightarrow *}$, $A''_{\rightarrow}[id] \geq A_{\rightarrow}[id]$ because $A''_{\rightarrow}[id]$ is either equal to $A_{\rightarrow}[id]$ or greater or equal than $\texttt{max}(A_{\rightarrow}[id], A'_{\rightarrow}[id])$.
+					\item \textit{idem} for all $id \in  A'_{\rightarrow *}$
+				\end{itemize}
+			\item \textit{acked}: \textit{idem} as \textit{given} but for $A''_{\leftarrow *}$ 
+		\end{itemize}
+\end{enumerate}
+
+
+All operations in Alg.~\ref{alg:account} and Alg.~\ref{alg:account-ordering} are therefore monotonic (except \texttt{initialize} which need not be).
+\end{proof}
+
+Because the \textit{ordering}, \textit{least-upper bound} and \textit{monotonicity} lemmas are true, then Theorem~\ref{th:account-crdt} is true.
+\end{proof}
+
+
+
+
+\begin{theorem}
+\label{th:ledger-crdt}
+The ledger of Algorithm~\ref{alg:ledger} is a state-based conflict-free replicated data type.
+\end{theorem}
+
+\begin{proof}
+
+\end{proof}
+
+\subsection{Balance}
+\label{sec:proof:balance}
+
+\subsubsection{Unavoidable tradeoffs}
+
+\begin{theorem}
+\label{proof:positive-bal-seq-order}
+If the balance of any account $A \in \mathds{A}$ should be greater or equal to 0 at all times, then all operations on the account should be sequentially ordered, \textit{i.e.}, for any pair of operations $f,f'$ on $A$, $f$ happens before $f'$ ($f \rightarrow f'$) or $f'$ happens before $f$ ($f \leftarrow f'$).
+\end{theorem}
+
+
+For the theorems below, $\mathds{A}$ is the set of all accounts participating in ledger $L$ and $\mathds{C} \subseteq \mathds{A}$ is the set of accounts allowed to create tokens.
+
+\subsubsection{Safety}
+
+\begin{lemma}
+For every pair of accounts $R,S \in \mathds{A}$, it is always true that $R_{\leftarrow S.id} \leq S_{\rightarrow R.id}$.
+\end{lemma}
+
+\begin{theorem}
+(Safety): It is always true that $\sum\limits_{A \in \mathds{A}} \texttt{balance}(A) \leq  \sum\limits_{C \in \mathds{C}} C_\uparrow - \sum\limits_{A \in \mathds{A}} A_\downarrow$.
+\end{theorem}
+
+
+\subsubsection{Liveness}
+
+\begin{lemma}
+If a receiver account $R \in \mathds{A}$ eventually acknowledges all amounts sent from a sender account $S \in \mathds{A}$ to $R$, then eventually $R_{\leftarrow S.id} = S_{\rightarrow R.id}$.
+\end{lemma}
+
+\begin{theorem}
+(Liveness): If every account $R \in \mathds{A}$ eventually acknowledges all amounts sent by every account $S \in \mathds{A}$ (including $R=S$), then eventually $\sum\limits_{A \in \mathds{A}} \texttt{balance}(A) = \sum\limits_{C \in \mathds{C}} C_\uparrow - \sum\limits_{A \in \mathds{A}} A_\downarrow$.
+\end{theorem}
+
+\section{System Model}
+
+
+
+
+\section{Related Work}
+
+Consensus number of a crypto-currency.
+
+ In contrast to Bitcoin~\cite{bitcoin}, we decouple the sending and reception of tokens in a transaction: upon a \textit{give} operation, the balance of the sender is immediately decreased but the receiver balance is not immediately increased by the same amount.  The increase on the receiver side happens only  after an explicit \textit{acknowledgement}. 
+ 
+Delta-CRDT (see portfolio example)~\cite{Almeida2018delta}
+ 
+\section{Future Work}
+ 
+\subsection{Limiting the Creator Set}
+
+\subsection{Tolerating Arbitrary Failures}
+
+	\subsubsection{Collusion-Resistance}
+
+\subsection{Limiting the Visibility of Transactions}
+
+\subsection{Eventually-Consistent Reputation and Access-Control Mechanisms}
+
+\subsection{Implementation Techniques for Resource-Limited Devices}
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+Implementation techniques for restricting token creation, which can potentially be based on cryptographic techniques, will be covered in future work.
+
+\section{Acknowledgements}
+\label{sec:acknowledgements}
+
+We thank Christian F. Tschudin for fostering a research environment allowing detours and playfulness in the process, as well as providing financial support for this work and feedback on early drafts. 
+
+\newpage
+
+\bibliographystyle{plain}
+\bibliography{main}
+
+\newpage
+\appendix
+
+\section{Notation and Conventions}
+\label{apdx:notation}
+
+We use notations and conventions that are good graphic mnemonics for the concepts and make the algorithms easier to reason about in the proofs (Section~\ref{sec:proofs}). The semantics are:
+
+\begin{itemize}
+	\item \textbf{Variables} are written in \textit{italic}:
+		\begin{itemize}
+			\item  lower case when containing literal values, ex: $id$;
+			\item upper case when containing an object with multiple fields or a dictionary with multiple key-value pairs, ex: $A$ for account object, and $L$ for a ledger dictionary;
+		\end{itemize}
+	\item An \textbf{object's field} is accessed using a subscript, ex: $A$'s identifier stored in field $\textbf{id}$ is accessed $A_{\scriptsize \textbf{id}}$;
+	\item An empty \textbf{dictionary} is written $\{\}$, accessing a dictionary $L$'s value stored under key $id$ is written $L[id]$, accessing all the keys of $L$ is written $L_*$;
+	\item \textbf{Assigning} a new value to a variable, a field, or a dictionary entry uses $\leftarrow$, ex: $id \leftarrow id'$, $A_{\scriptsize\textbf{id}} \leftarrow id$, $L[id] \leftarrow A$. Variables, fields, and dictionaries are mutable and can be modified in place;
+	 \item A \textbf{key-value} pair for dictionaries is written $\textit{key} \rightarrow \textit{value}$;
+	 \item We use "dictionary-comprehension", similar to Python, for inline initialization fo dictionares, ex: ${ \textit{key} \rightarrow \textit{value} ~\textbf{for}~ \textit{key} ~\textbf{in}~ K }$;
+	\item \textbf{Different states} for replicas of objects or dictionaries are written with $'$ and $''$ using the same variable name, ex: $A, A', A''$. We represent output values of functions using variable names with $'$ or $''$ to show they are later states of the same replica;
+	\item The  \textbf{flow of tokens} on an account is suggested by the direction of an arrow used as a field name: 
+		\begin{itemize}
+			\item $A_\uparrow$ returns the number created tokens, which increases the account balance without transfers;
+			\item $A_\downarrow$ returns the number of burned tokens, which decreases the account balance without transfers;
+			\item $A_{\leftarrow}$ is a dictionary and $A_{\leftarrow}[id]$ returns the number of tokens received from $id$ and therefore flowing \textit{into} account $A$ (the arrow is a subscript to distinguish from assignment);
+			\item $A_{\rightarrow}$ is a dictionary and $A_{\rightarrow}[id]$ returns the number of tokens given to $id$ therefore flowing \textit{out of} account $A$;
+		\end{itemize}
+\end{itemize}
+
+Apart from these, we use common mathematical and pseudo-code conventions: 
+\begin{itemize}
+	\item $x \in X$ is an element $x$ in a set $X$ and $x \notin X$ means $x$ is not in a set $X$;
+	\item $X \subseteq Y$ means $X$ is a subset of $Y$ which may include up to all elements of $Y$;
+	 \item $\sum$ is a summation;
+	 \item $\sum\limits_{x \in X} x$ is the sum of all elements in $X$;
+	 \item $\leq$ is smaller or equal;
+	 \item $\bigwedge$ and $\textbf{and}$ both represent a logical \textit{and};
+	 \item $\bigwedge\limits_{x \in X} x$ is the logical and between all elements in $X$;
+	 \item $\textbf{for}~x ~\textbf{in}~ X~\textbf{do}$ iterates over all values in $X$ sequentially assigning them to $x$.
+\end{itemize}
+
+
+
+\end{document}  
