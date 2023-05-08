@@ -13,14 +13,18 @@
 \usepackage{hyperref}
 \usepackage{doi}
 \usepackage{pf2}
+\usepackage{todonotes}
 
 %\usepackage{amsthm}
 %\newtheorem{theorem}{Theorem}
 %\newtheorem{lemma}{Lemma}
 
 \newcommand{\defeq}{\overset{\mathrm{def}}{=}}
+\newcommand{\mergeop}{\overset{\sqcup}\rightarrow}
+\newcommand{\localop}{\overset{\textbf{local}}\rightarrow}
+\newcommand{\anyop}[1]{\overset{#1}\rightarrow}
 
-\title{Eventually-Consistent Ledgers}
+\title{State-based Conflict-Free Replicated Ledger}
 \author{Erick Lavoie}
 %\date{March, 13, 2023}							% Activate to display a given date or no 
 
@@ -29,17 +33,24 @@
 
 
 \begin{abstract}
-It is commonly assumed that electronic asset transfers should require that the amount received in an account be exactly equal to the amount sent from another account \textit{immediately after every transaction}.  In this paper, we show instead that weaker invariants are sufficient to enable eventually-consistent electronic asset transfers, namely that 1) the positive contribution of a sender $S$ to a receiver $R$'s balance shall always be less or equal than the total amount ever sent by $S$ to $R$ and 2) the equality only needs to hold \textit{eventually}.
+The electronic asset transfer problem, which is solved by many replicated ledgers, has been shown to not require consensus. To our knowledge, all newer designs that leverage this property are based on a causality-based operation view that makes reasoning about and efficiently implementing replicated ledgers harder than necessary.
 
-We present a state-based conflict-free replicated ledger leveraging these invariants and prove its convergence as well as the safety and liveness of the resulting account balances. We show that our design can ensure strictly positive balances in crash-stop, crash-recovery, and fail-silent system models, as long as the system serializes individual account operations. We also show that concurrent operations on the same account, which may result in tokens being spent that were not previously owned, can be remedied by an (honest) account holder by later acquiring the missing tokens. We finally highlight open challenges that arise in adversarial (Byzantine) settings. 
+We reformulate the design of a replicated ledger as a state-based conflict-free replicated data type (CRDT) based on grow-only counters. This lowers requirements on message delivery to eventual delivery of the latest state transitively. Moreover, the system can be analyzed by reasoning only about the states and differences between states of the accounts, which significantly simplifies the presentation of key algorithms. This better highlights that the key property enabling eventually-consistent ledgers is that the positive contribution of a sender account to a receiver account's balance only needs to be accounted for \textit{eventually}, allowing senders to decrease their balance independently of receivers. Moreover, as a departure from previous designs, we also show that a conflict-free replicated ledger converges even in the presence of \textit{overspending}, albeit to a negative account balance. This is useful for designing eventually-consistent distributed systems in which a \textit{temporary negative balance} is not critical, because, \textit{e.g.}, users have to restore a non-negative balance to maintain access. Finally, in our state-based approach, \textit{overspending requires concurrent transfers from different replicas to different receivers}: strictly sequential operations on the same account cannot lead to overspending and concurrent transfers from the same account to the same receiver will result in the amount transferred to be smaller or equal than the available balance.
 
-We envision applications using eventually-consistent ledgers to complement the existing financial and blockchain infrastructure by offering faster and more affordable small transactions between trusting parties, while the existing infrastructure will still be required for larger transactions between untrusting parties.
+In this paper, we therefore present a state-based conflict-free replicated ledger and prove its convergence, the conditions under which overspending arises, as well as global safety and liveness conditions of the resulting account balances. We show that our design provides these properties in crash-stop, crash-recovery, and fail-silent system models, which is appropriate to any deployment in which all replicas are managed by trusted entities. We discuss different design dimensions to inform designers of possible choices depending on application requirements. We also outline remaining challenges to obtain similar properties in open systems in which replicas might arbitrarily deviate from our algorithms.
 \end{abstract}
 
 \section{Introduction}
 \label{sec:introduction}
 
-\section{Eventually-Consistent Ledgers}
+Contributions:
+\begin{itemize}
+	\item We present the design of a distributed ledger as a state-based conflict-free replicated data type and prove its convergence, as well as its balance safety and liveness properties;
+	\item We highlight the design possibilities around token creation, enforcing strictly positive account balances, and management of replicas to guide system designers;
+	\item We highlight future research directions that are opened by our approach, especially in implementing eventually consistent ledgers in adversarial open settings.
+\end{itemize}
+
+\section{State-based Eventually-Consistent Ledger}
 
 In this section, we present the design of eventually-consistent ledgers in two parts: we present eventually-consistent \textit{accounts} (Section~\ref{sec:account}) and then the eventually-consistent \textit{ledgers} proper (Section~\ref{sec:ledger}). We present the state and operations on both accounts and ledgers at a high-level to outline a \textit{family} of designs that are eventually-consistent: this will pave the way for a discussion of design dimensions (Section~\ref{sec:design-issues}) that can turn this high-level design into concrete implementations. Our notation and conventions are explained as they are introduced and collected in Appendix~\ref{apdx:notation}.
 
@@ -71,44 +82,61 @@ The implementation of the state and corresponding operations is listed in Algori
     \EndFunction
     \State
     \Function{create}{$A,\textit{amount}$} 
-        \State $A' \leftarrow \textit{copy}(A)$ \Comment{Deep copy}
     	\If{$A_{\scriptsize\textbf{id}} \in \mathds{C} \wedge \textit{amount} > 0$} 
-		 \State $A'_\uparrow \leftarrow A_\uparrow + \textit{amount}$ 
+	      	 \State $A' \leftarrow \textit{copy}(A)$
+		 \State $A'_\uparrow \leftarrow A_\uparrow + \textit{amount}$
+		 \State \Return $A'$
+	\Else
+		\State \Return $A$
 	\EndIf
-	\State \Return $A'$
+
     \EndFunction
     \State
      \Function{burn}{$A,\textit{amount}$}  
-        \State $A' \leftarrow \textit{copy}(A)$
     	\If{$\textit{amount} > 0 \wedge \texttt{balance}(A) \geq \textit{amount}$} \label{ln:burn-balance-check}
-		 \State $A'_\downarrow \leftarrow A_\downarrow + \textit{amount}$ 
+		 \State $A' \leftarrow \textit{copy}(A)$
+		 \State $A'_\downarrow \leftarrow A_\downarrow + \textit{amount}$
+		 \State \Return $A'$
+	\Else
+		\State \Return $A$
 	\EndIf
-	\State \Return $A'$
     \EndFunction
     \State
     \Function{giveTo}{$A,\textit{amount}, \textit{id}$}  
-        \State $A' \leftarrow \textit{copy}(A)$
     	\If{$\textit{amount} > 0 \wedge \texttt{balance}(A) \geq \textit{amount}$}  \label{ln:give-balance-check}
+	        \State $A' \leftarrow \textit{copy}(A)$
 		\If{$id \notin A_{\rightarrow *}$}
 			\State $A'_{\rightarrow}[id] \leftarrow \textit{amount}$ 
 		\Else
 		         \State $A'_{\rightarrow}[id] \leftarrow A_{\rightarrow}[id] + \textit{amount}$ 
 		\EndIf
+		\State \Return $A'$
+	\Else
+		\State \Return $A$
 	\EndIf
-	\State \Return $A'$
+
     \EndFunction
     \State
     \Function{ackFrom}{$A, B$}
-        \State $A' \leftarrow \textit{copy}(A)$
-        \If{$A_{\scriptsize\textbf{id}} \in B_{\rightarrow *} \wedge \texttt{balance}(B) \geq 0$}
+        \If{$\texttt{unackedFrom}(A,B) > 0 \wedge \texttt{balance}(B) \geq 0$}
+                \State $A' \leftarrow \textit{copy}(A)$
 		\If{$B_{\scriptsize\textbf{id}} \notin A_{\leftarrow *}$}
 			 \State $A'_{\leftarrow}[B_{\scriptsize\textbf{id}}] \leftarrow B_{\rightarrow}[A_{\scriptsize\textbf{id}}]$
 		\Else
 			 \State $A'_{\leftarrow}[B_{\scriptsize\textbf{id}}] \leftarrow \texttt{max}(A_{\leftarrow}[B_{\scriptsize\textbf{id}}], B_{\rightarrow}[A_{\scriptsize\textbf{id}}])$ 
 		\EndIf
+		\State \Return $A'$
+        \Else
+        		\State \Return $A$
         \EndIf
-	\State \Return $A'$
+
     \EndFunction
+    \end{algorithmic}
+\caption{\label{alg:account} Account: State Initialization and State-Changing Operations}
+\end{algorithm}
+
+\begin{algorithm}
+\begin{algorithmic}[1]
     \State
         \Function{balance}{A}
         \State $\textit{debits} \leftarrow A_\uparrow + \sum\limits_{id \in A_{\leftarrow *}} A_{\leftarrow}[id]$ 
@@ -119,10 +147,16 @@ The implementation of the state and corresponding operations is listed in Algori
     \EndFunction
     \State
     \Function{unackedFrom}{$A, B$}
-        \State \Return $B_{\rightarrow A_{\tiny\textbf{id}}} - A_{\leftarrow B_{\tiny\textbf{id}}}$
+        \If{$A_{\scriptsize\textbf{id}} \in B_{\rightarrow *} \wedge B_{\scriptsize\textbf{id}} \in A_{\leftarrow *} $}
+        		\State \Return $B_{\rightarrow A_{\tiny\textbf{id}}} - A_{\leftarrow B_{\tiny\textbf{id}}}$
+	\ElsIf{$A_{\scriptsize\textbf{id}} \in B_{\rightarrow *}$}
+		\State \Return $B_{\rightarrow A_{\tiny\textbf{id}}}$
+	\Else
+		\State \Return $0$
+	\EndIf
     \EndFunction
     \end{algorithmic}
-\caption{\label{alg:account} Account: State and Operations}
+\caption{\label{alg:account} Account: Query Operations}
 \end{algorithm}
 
 A replica of an account belonging to owner $id$ is created with \texttt{initialize}. This initializes the internal identifier $A_{\textbf{id}}$ to $id$, the number of created tokens $A_\uparrow$ to $0$, the number of burned tokens $A_\downarrow$ to $0$, the dictionary of given tokens $A_\rightarrow$ to an empty dictionary, and the dictionary of acknowledged tokens $A_\leftarrow$ to an empty dictionary as well.\footnote{The left or right direction of the arrow notation suggests the corresponding direction of funds, respectively into or out from an account.}
@@ -175,7 +209,7 @@ The next two operations, shown in Algorithm~\ref{alg:account-ordering}, respecti
 	\EndFor
 	\State
 	\State $S \leftarrow A_{\leftarrow *} \cup A_{\leftarrow *}'$ \Comment{Sender ids}
-	\For{$id ~\textbf{in}~ A'_{\leftarrow *}$}
+	\For{$id ~\textbf{in}~S$}
 		\If{$id \in A_{\leftarrow *} \wedge id \in A_{\leftarrow *}'$}
 			\State $A''_{\leftarrow}[id] \leftarrow \texttt{max}(A_{\leftarrow}[id], A'_{\leftarrow}[id])$
 		\ElsIf{$id \in A_{\leftarrow *}$}
@@ -196,6 +230,28 @@ The compare operation for account states $A$ and $A'$, written $A \leq_A  A'$, r
 The merge operation between account states $A$ and $A'$, written $A'' = A \sqcup A'$, returns a new account state $A''$ that is the smallest state according to $\leq_A$ that is also larger than both $A$ and $A'$. It is implemented by 1) taking the union of all the keys (identifiers) on both $A_\rightarrow$ and $A'_\rightarrow$ into $A''_\rightarrow$, and similarly on $A_\leftarrow$ and $A'_\leftarrow$ into $A''_\leftarrow$; and 2) taking the maximum value of all internal counters if present on both $A$ and $A'$, otherwise either the value of $A$ or $A'$ whichever exists. This is useful, for example to update the state of a local replica so that it eventually incorporates all the changes that have happened on other remote replicas.
 
 The account we just presented is a Conflict-Free Replicated Data Type~\cite{shapiro:hal-00932836} (Section~\ref{sec:proofs}) because all replicas are guaranteed to converge to the same state eventually. However, concurrent updates may result in a negative balance: \textit{e.g.}, two concurrent burn and give operations may have a sufficient balance to complete concurrently but together would compound after merging the state of replicas  (Figure~\ref{fig:account-negative-bal}).\footnote{Perhaps surprisingly, if there were no transfers, concurrent burns would never result in a negative balance because only the largest burnt amount, which was locally valid, would be retained instead of the sum of all burnt amounts. See the merge operation in Alg.~\ref{alg:account-ordering}.}. That being said, \textit{only concurrent updates} may result in a negative balance: if all updates are sequential, the sufficient balance pre-condition on all operations that decrease the balance (Alg.~\ref{alg:account}, line~\ref{ln:burn-balance-check} and \ref{ln:give-balance-check}) otherwise prevents the balance from going negative. We discuss some of the design dimensions available for system designers in Section~\ref{sec:design-neg-balance-choice}, that make the problem less of an issue than it might appear at first.
+
+\begin{algorithm}
+\begin{algorithmic}[1]
+    \Function{$\sqcap_\mathds{A}$}{$A$, $A'$} \Comment{Call written in infix notation, \textit{e.g.}, $A \sqcap_\mathds{A}  A'$}
+    	\If{$A_{\footnotesize \textbf{id}} \neq A'_{\footnotesize \textbf{id}}$}
+		\textbf{error}
+	\EndIf
+	\State
+        \State $A'' \leftarrow \texttt{initialize}(A_{\footnotesize \textbf{id}})$
+        \State $A''_\uparrow \leftarrow \texttt{min}(A_\uparrow, A'_\uparrow)$
+        \State $A''_\downarrow \leftarrow \texttt{min}(A_\downarrow, A'_\downarrow)$ 
+	\For{$id ~\textbf{in}~ A_{\rightarrow *} \cap A_{\rightarrow *}'$} \Comment{Receiver ids}
+		\State $A''_{\rightarrow}[id] \leftarrow \texttt{min}(A_{\rightarrow}[id], A'_{\rightarrow}[id])$
+	\EndFor
+	\For{$id ~\textbf{in}~ A_{\leftarrow *} \cap A_{\leftarrow *}'$} \Comment{Sender ids}
+		\State $A''_{\leftarrow}[id] \leftarrow \texttt{min}(A_{\leftarrow}[id], A'_{\leftarrow}[id])$
+	\EndFor
+	\State \Return $A''$	
+    \EndFunction
+\end{algorithmic}
+\caption{\label{alg:account-hlb} Account: Highest Lower Bound}
+\end{algorithm}
 
 
 \begin{figure}
@@ -264,8 +320,6 @@ The merge operation between ledger states $L$ and $L'$, written $L'' = L \sqcup_
 
 This ledger design is also a Conflict-Free Replicated Data Type [1] (Section~\ref{sec:proofs}) because all replicas are guaranteed to converge to the same state eventually. To the exception of the possibility that accounts may have negative balance, there is no additional issue related to concurrency: any concurrent account updates will result in a valid ledger. Moreover, this is the case whichever design choices (Section~\ref{sec:design-issues}) are made regarding accounts.
 
-\subsection{Sequential and Concurrent Behaviour}
-
 
 \section{Design Dimensions}
 \label{sec:design-issues}
@@ -321,6 +375,108 @@ The failure to implement negative feedback mechanisms as above, without the abil
 	\item \textit{Multiple organizations}  \textit{(federated)}
 	\item \textit{End-users} \textit{(peer-to-peer)}
 \end{itemize}
+
+
+\section{System Model}
+
+
+
+
+\section{Related Work}
+
+\subsection{Blockchains}
+
+ In contrast to Bitcoin~\cite{bitcoin}, we decouple the sending and reception of tokens in a transaction: upon a \textit{give} operation, the balance of the sender is immediately decreased but the receiver balance is not immediately increased by the same amount.  The increase on the receiver side happens only  after an explicit \textit{acknowledgement}. 
+
+Survey~\cite{weichao2018blockchain}
+
+\subsection{Consensus-Free Ledgers} 
+
+Gupta's Master thesis~\cite{gupta2016nonconsensusdft} is the earliest published work to our knowledge that describe a consensus-free ledger.
+
+Astro~\cite{collins2020broadcast-payment} executes payment by broadcasting, using a Byzantine reliable broadcast in a permissioned setting showing the throughput and latency benefits of not using consensus because it is not actually need for asset transfer~\cite{guerraoui2021consensus}. 
+Astro partitions replicas in shards among which Byzantine reliable broadcast is necessary but does not require agreement from all replicas because, similar to the property we leverage, the amount received from a payment need only be equal \textit{eventually} to the amount sent, the validity of the transfer only depends on the state of the sender. Astro uses exclusive logs (\textit{xlog}) that are equivalent to the single-writer append-only logs of Secure-Scuttlebutt (SSB)~\cite{kermarrec2020gossiping,tarr2019ssb} and Hypercore~\cite{hypercore-website} (see Section~\ref{sec:p2p-db}), whose designs was inspired by a reconciliation protocol~\cite{vanRenesse2008reconciliation} published by Amazon researchers in 2008. Astro prevents concurrent modifications of the same account by ordering transactions from the same sender with a Byzantine reliable broadcast among replicas. In contrast, our replicated ledger design does not prevent concurrent modifications but guarantees that all replicas will converge to the same (possibly negative) balance when they arise.
+
+Fast-Pay~\cite{baudet2020fastpay} uses managed replicas, called authorities, to ensure sequential operations on every account and therefore remove the possibility of overspending. In contrast to our design, the creation (and destruction) of tokens is done externally to the Fast-Pay system by anchoring the payment system to an existing blockchain or centrally-managed database. Similar to Astro~\cite{collins2020broadcast-payment}, it shows that much lower latency and higher throughput are possible when carefully designing the system to avoid the need for consensus.
+
+Auvolat \textit{et al.}~\cite{auvolat2021money} also obtain a consensus-free ledger by decoupling the aggregation of incoming and outgoing amounts as we do but define the core algorithms in terms of operations over a causal history, and explore the effects of the underlying broadcast channel, instead of our stateful formulation as a collection of grow-only counters. Our formulation removes the need to reason about causal histories and as all state-based CRDTs only require eventual delivery of the latest state instead of a reliable broadcast primitive.
+
+
+ABC~\cite{sliwinski2020abc} is a proof-of-stake blockchain that does not require consensus, specifically relying instead on a weaker termination property that only guarantees termination of operations for honest (non double-spending) participants. The design is also based on an operation view that explicitly represents and store the operations as a directed-acyclic graph (DAG) of transactions, to determine the balance of participants. The state of the ledger for a given causal history, \textit{i.e.} DAG of transactions, can be derived as a \textit{checkpoint} to summarize the past and speed up validation.
+
+Bezerra and Kuznetsov~\cite{bezerra2022tame}, instead of outright preventing overspending, bound the number of times the same tokens can be spent with verifiable evidence that the same tokens have been spent multiple times. They also suggest possible strategies once overspending has been detected.
+
+Frey \textit{et al.}~\cite{frey:hal-03346756} show how Mazurkiewicz’s traces can be used to formalize ledgers in which operations between different processes commute but operations on the same process are sequential.
+
+Permisionless and Asynchronous Asset Transfer: Pastro which work in an adversarial setting~\cite{kuznetsov2021permissionless} weighted quorums using stakes. Also implemented on top of reliable broadcast. Assumes a dynamic adversary.
+
+Opportunistic Algorithmic Double-Spending~\cite{cryptoeprint:2021/1182}
+
+Hearsay for Distributed Monetary System~\cite{georghiades2021needs}
+
+Handling message semantics with generic broadcast protocols~\cite{pedone2002genericbroadcast}
+
+Consensus number of a crypto-currency ~\cite{guerraoui2021consensus}
+
+Cholvi \textit{et al.}~\cite{cholvi2021bdso} introduced Byzantine-Tolerant Replicated Grow-Only Sets to implement atomic appends in a ledger-like structure without the need for consensus, in an adversarial environment. Similar to other work on consensus-free ledgers, they base their semantics on broadcast abstractions while we base our account semantics on state-based CRDTs. This shows solutions in adversarial environments exists but finding simplest mechanisms that would still be compatible with our state-based approach is still an open problem.
+
+
+In self-sovereign cryptocurrencies~\cite{shapiro2023sovereign}, Shapiro identifies general desirable economic properties of cryptocurrencies that can be issued and traded by anyone, people, communities, corporations, banks, municipalities and banks and provide a protocol that meets these properties. In complement, Lavoie and Tschudin~\cite{lavoie2022localcryptotokens} highlight that transactions costs in regular consensus-based blockchains, such as Bitcoin and Ethereum, are larger than many local economic applications can support, argue for eventual detection rather than prevention of over-spending, and identify potential applications. The design of our conflict-free replicated ledger is a step in the direction of cryptotokens that meet both, but would require additional mechanisms to be fault-tolerant in adversarial settings.
+
+
+\subsection{Conflict-Free Replicated Data Types} 
+
+Conflict-Free Replicated Data Types (CRDTs)~\cite{shapiro:hal-00932836} are replicated mutable objects that are designed to ensure converge to the same state \textit{eventually}, \textit{i.e.}, at some point in the future after updates have stopped, and \textit{automatically}, \textit{i.e.} using deterministic conflict-resolution rules in the presence of concurrent updates. An initial survey of useful data types~\cite{shapiro:inria-00555588} kickstarted the field, which has blossomed into over a hundred publications, as listed on a dedicated website~\cite{crdt-website}.
+
+To our knowledge, there are no other published state-based conflict-free replicated ledgers, as listed on the aforementioned website~\cite{crdt-website}. That being said, the community exploring CRDTs seems to run parallel to the distributed computing community with slightly different, but ultimately connected, formalisms. For example, the designs presented in \cite{guerraoui2021consensus} and \cite{collins2020broadcast-payment} can be considered operation-based CRDTs since their operations commute, \textit{i.e.} the order in which transfers are received does not matter as long as they are delivered in their sending order. It appears the distributed computing community tends to favour an operation-based view and encapsulates the relevant properties into broadcast abstractions, as surveyed for example in this textbook~\cite{cachin2011introduction}, while the CRDT community explores both state-based and operation-based approaches.  
+
+
+TODO: Delta-CRDT (see portfolio example)~\cite{Almeida2018delta}
+
+\subsection{Consistency Models for Replicated Objects}
+
+Viotti and  Vukoli\'{c} surveyed all major consistency models that have been proposed for operations on distributed objects up to 2016~\cite{viotti2016consistency-db-survey}, with formal definitions for each. They also relate all consistency models into a partial order, which helps highlight how the strong eventual consistency~\cite{shapiro:hal-00932836} approach taken by CRDTs, and used by our State-based Conflict-Free Replicated Ledger, runs parallel to most mother consistency models previously explored.
+
+\subsection{Peer-to-Peer Eventually-Consistent Replicated Databases}
+\label{sec:p2p-db}
+
+The design we presented started as an exploration to implement a replicated ledger for Secure-Scuttlebutt (SSB)~\cite{kermarrec2020gossiping,tarr2019ssb}, an eventually consistent database based on single-writer append-only logs combined with peer-to-peer reconciliation protocols. The append-only logs provide a sequential ordering based on cryptographic hashes and signatures, which would be sufficient to maintain non-negative account balances. However, the reconciliation protocol of Secure-Scuttlebutt does not tolerate \textit{forks}, \textit{i.e.}, a concurrent message inserted at the same index in a log, potentially intentionally by a malicious participant in their own log, turns the log into a tree. In the presence of forks, replicas will only accept updates on the branch they initially started replicating and forever reject all others, which may result in an irreconcilable partitioning of replicas. Hypercore~\cite{hypercore-website}, previously known as DAT~\cite{ogden2017dat,robinson2018dat} and now maintained by Holepunch~\cite{holepunch-website}, is also an eventually consistent database based on single-writer append-only logs. It suffers from the same \textit{fork} issue~\cite{hypercore-handling-conflicts,hypercore-split-resolution-dep}  as SSB. Both designs are therefore not sufficient to implement our replicated ledger (and is not eventually consistent!) in an adversarial environment. Solving the fork issue in a peer-to-peer adversarial environment is still an open question.
+ 
+\section{Future Work}
+ 
+\subsection{Limiting the Creator Set}
+
+\subsection{Tolerating Arbitrary Failures}
+
+	\subsubsection{Collusion-Resistance}
+
+\subsection{Limiting the Visibility of Transactions}
+
+\subsection{Eventually-Consistent Reputation and Access-Control Mechanisms}
+
+\subsection{Implementation Techniques for Resource-Limited Devices}
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+Implementation techniques for restricting token creation, which can potentially be based on cryptographic techniques, will be covered in future work.
+
+\section{Acknowledgements}
+\label{sec:acknowledgements}
+
+We thank Christian F. Tschudin for fostering a research environment allowing detours and playfulness in the process, as well as providing financial support for this work and feedback on earlier versions of this work. The idea of investigating the possibilities offered by allowing accounts to converge to a negative balance in some circumstances was first suggested by him. Once the prejudice against negative balances was abandoned, that opened the possibility of expressing accounts as state-based CRDTs and greatly simplified the design.
+
+I would also like to thank Prof. Dr. Tschudin for having initiated a CRDT seminar and invited me to co-teach it, which created the opportunity of learning how to formalize CRDT algorithms. I was initially planning to write a system paper on a similar design. However, after 6-7 design iterations, it became obvious that the design had subtleties that greatly benefitted from a more formal treatment to tease out and get right. The teaching of the CRDT seminar happened exactly at the right time to review fundamentals of distributed algorithms in general, and CRDTs in particular, to ramp up the skills to carry such work.
+
+
+
+\newpage
+
+\bibliographystyle{plainurl}
+\bibliography{main}
+
+\newpage
+\appendix
 
 \section{Proofs}
 \label{sec:proofs}
@@ -465,7 +621,7 @@ Because an account state is the composition of \textit{grow-only counters} ($A_\
 	\step{lbl:account:lub}{
 	        \textbf{Least Upper Bound:} 
 		\assume{\begin{pfenum}
-			\item $A \in \mathds{A}, A' \in \mathds{A}, A'' \in \mathds{A}$
+			\item $A \in \mathds{A}, A' \in \mathds{A}$
 			\item \label{lbl:account:assumption:id} $A_{\footnotesize \textbf{id}} = A'_{\footnotesize \textbf{id}}$
 		\end{pfenum}}
 		
@@ -597,9 +753,6 @@ Because an account state is the composition of \textit{grow-only counters} ($A_\
 
 \subsubsection{Ledger}
 
-%\begin{theorem}
-
-%\end{theorem}
 
 \label{th:ledger-crdt}
 \prove{The ledger of Algorithm~\ref{alg:ledger} is a state-based (convergent) conflict-free replicated data type.}
@@ -739,22 +892,87 @@ Because an account state is the composition of \textit{grow-only counters} ($A_\
 	\end{proof}
 \end{proof}
 
+\subsection{Highest Lower-Bound on Accounts}
+\label{sec:hlb}
+
+\assume{\begin{pfenum}
+	\item $A_{\scriptsize \textbf{id}} \in \mathds{A}$
+	\item $A'_{\scriptsize \textbf{id}} \in \mathds{A}$
+	\item $A_{\scriptsize \textbf{id}} = A'_{\scriptsize \textbf{id}}$
+\end{pfenum}}
+\prove{\textbf{Highest Lower Bound:} $A'' = A \cap_\mathds{A} A'$ (Algorithm~\ref{alg:account-hlb}) is the highest lower bound of $A$ and $A'$ in $\mathds{S}_\mathds{A}$.}
+\pfsketch~	The \texttt{minimum} function computes the upper least bound on numbers. The intersection ($\cap$) computes the upper least bound on sets of identifiers. The composition of highest least bounds is also a highest least bound on the cartesian products of domains (proof is similar to that for highest lower bound of Section~\ref{sec:lemma:lub-composition}). $\cap_\mathds{A}$ is a composition of \texttt{min} on grow-only counters an $\cap$ on sets of identifiers, therefore it also computes an upper least bound.
+\begin{proof}
+Alternatively a direct proof, using the definition of upper least bound:
+	\step{lbl:hlb-1}{$A'' \leq_\mathds{A} A$}
+	\begin{proof}
+		\step{lbl:hlb-1-1}{$A''_\downarrow = \texttt{min}(A_\downarrow, A'_\downarrow) \leq A_\downarrow$ \newline
+			   $A''_\uparrow = \texttt{min}(A_\uparrow, A'_\uparrow) \leq A_\uparrow$
+		}
+				
+		\step{lbl:hlb-1-2}{$A''_{\leftarrow *} = A_{\leftarrow *} \cap A'_{\leftarrow *} \subseteq A_{\leftarrow *}$ \newline
+			   $A''_{\rightarrow *} = A_{\rightarrow *} \cap A'_{\rightarrow *} \subseteq A_{\rightarrow *}$
+		}
+		
+		\step{lbl:hlb-1-3}{
+			\assume{\begin{pfenum}
+				\item $id \in A_{\leftarrow *} \wedge id \in A'_{\leftarrow *}$
+			\end{pfenum}}
+			$A''_{\leftarrow}[id] = \texttt{min}(A_{\leftarrow}[id], A'_{\leftarrow}[id]) \leq A_{\leftarrow}[id]$
+			
+			\assume{\begin{pfenum}
+				\item $id \in A_{\rightarrow *} \wedge id \in A'_{\rightarrow *}$
+			\end{pfenum}}
+			$A''_{\rightarrow}[id] = \texttt{min}(A_{\rightarrow}[id], A'_{\rightarrow}[id]) \leq A_{\rightarrow}[id]$
+		}
+		
+		\qedstep
+		\begin{proof}
+			The five required conditions for $\leq_\mathds{A}$ to be true (Alg.~\ref{alg:account-ordering}) are satisfied by the followings:
+			\begin{pfenum}
+				\item By assumption $A_{\scriptsize \textbf{id}} = A'_{\scriptsize \textbf{id}}$;
+				\item ($\textit{created}$) By \stepref{lbl:hlb-1-1};
+				\item ($\textit{burned}$) By \stepref{lbl:hlb-1-1};
+				\item ($\textit{given}$) By \stepref{lbl:hlb-1-2} and \stepref{lbl:hlb-1-3} for all $id \in A''_{\rightarrow *}$, the required assumption on \stepref{lbl:hlb-1-3} all satisfied because $A''_{\rightarrow *} = A_{\rightarrow *} \cap A'_{\rightarrow *}$;
+				\item ($\textit{acked}$) Idem but on $A''_{\leftarrow *}$.
+			\end{pfenum}
+		\end{proof}
+	\end{proof}
+	
+	\step{lbl:hlb-2}{$A'' \leq_\mathds{A} A'$}
+	\begin{proof}
+		Idem \stepref{lbl:hlb-1} but on $A'$ instead of $A$.
+	\end{proof}
+	
+	\step{lbl:hlb-3}{$\nexists A''' \in \mathds{A} : A''' \leq_\mathds{A} A \wedge A''' \leq_\mathds{A} A' \wedge A'' <_\mathds{A} A'''$}
+	\begin{proof}
+		Assume by contradiction that such a $A'''$ exists. Therefore one or multiple of these conditions should be true (taken from Alg.~\ref{alg:account-ordering} and removing the equality case):
+		\begin{pfenum}
+			\item $A''_\uparrow < A'''_\uparrow$
+			\item $A''_\downarrow < A'''_\downarrow$
+			\item $A''_{\leftarrow *} \subset A'''_{\leftarrow *}$
+			\item $\forall id \in A''_{\leftarrow *} : A''_{\leftarrow}[id] < A'''_{\leftarrow}[id] $
+			\item $A''_{\rightarrow *} \subset A'''_{\rightarrow *}$  
+			\item $\forall id \in A''_{\rightarrow *} : A''_{\rightarrow}[id] < A'''_{\rightarrow}[id] $
+		\end{pfenum}
+		However, for every number comparison ($<$) a larger value is not smaller than the corresponding values of $A$ and $A'$ because it is larger than either or both. Similarly, for set comparisons ($\subset$) a larger subset is smaller than the corresponding identifiers sets of $A$ and $A'$ because it is larger than either or both.
+		
+		Since none of the conditions above can be true, such a $A'''$ does not exist.
+	\end{proof}
+	
+	\qedstep
+	\begin{proof}
+		The conjunction of \stepref{lbl:hlb-1}, \stepref{lbl:hlb-2}, and \stepref{lbl:hlb-3} is the definition of a highest lower bound.
+	\end{proof}
+\end{proof}
+
+
+
 \subsection{Balance}
 \label{sec:proof:balance}
 
-\begin{proof}
-	\assume{\begin{pfenum}
-		\item $A,B,C \in \mathds{A} \wedge A_{\scriptsize \textbf{id}} \in \mathds{C} \wedge  A_{\scriptsize \textbf{id}} \neq  B_{\scriptsize \textbf{id}}  \neq  C_{\scriptsize \textbf{id}} $
-		\item $\texttt{balance}(A) \geq 0 \wedge \texttt{balance}(B) \geq 0 \wedge \texttt{balance}(C) \geq 0$
-		\item $x,x' \in \mathds{R}^+ \wedge x > 0 \wedge x' > 0$
-	\end{pfenum}}
-\end{proof}
 
-For every case, we list the properties that have changed between the original state of an account, and its following states marked with $'$. Every non-listed properties stays the same. Except for transfers between accounts, we do not list most cases of sequential and concurrent updates on accounts with different identifiers, such as $A$ and $B$, because state updates are independent.
-
-
-
-\subsubsection{Strict Sequences of Account Operations Maintain a Non-Negative Balance}
+\subsubsection{Sequences of Account Operations Maintain a Non-Negative Balance}
 
 
 \assume{\begin{pfenum}
@@ -877,216 +1095,217 @@ For every case, we list the properties that have changed between the original st
 	\end{proof}
 \end{proof}
 
-\subsubsection{Sequences of Operations on Different Accounts Always Result in Non-Negative Balances}
+\subsubsection{Merging Non-negative Accounts May Result in a Negative Balance}
 
-
-\assume{\begin{pfenum}
-	\item $L \in \mathds{L}$
-	\item $\forall_{(id,b) \in \texttt{balances}(L^0)} b \geq 0$
-	\item $n \in \mathds{N}$
-\end{pfenum}}
 \define{\begin{pfenum}
-		\item $\textit{op}(L) \defeq \begin{cases}
-	        			\texttt{initialize$_\mathds{A}$}(id) :  id \in \mathds{I} \wedge id ~\text{is globally unique}  \\
-				\texttt{create}(L[id], x) : x \in \mathds{R} \wedge id \in L_* \\
-				\texttt{burn}(L[id], x) : x \in \mathds{R} \wedge id \in L_* \\
-				\texttt{giveTo}(L[id], x, id') : x \in \mathds{R} \wedge id \in L_* \wedge id' \in \mathds{I} \\
-				\texttt{ackFrom}(L[id], L[id'],) :  id \in L_* \wedge id' \in L_*  \\
-			\end{cases}$
-		\item $\textit{Seq}(L, n) \defeq  \begin{cases}
-			n = 0 & L \\
-			n \geq 1 & \texttt{add}(L^{n-1}, op(L^{n-1})) :  L^{n-1} = \textit{Seq}(L, n-1)
-		\end{cases}$
-\end{pfenum}}
-\prove{For any sequence $L^n  = \textit{Seq}(L, n)$ such that $n \geq 1$, it is always true that \newline $\forall_{(id,b) \in \texttt{balances}(L^n)} b \geq 0$.}
-\begin{proof}
-	\pf~ 	
-\end{proof}
-
-
-\subsubsection{Concurrent Sequences of Operations on Different Accounts Always Result in Non-Negative Balances}
-
-\assume{\begin{pfenum}
-	\item $L^0 \in \mathds{L}$
-	\item $\forall_{(id,b) \in \texttt{balances}(L)} b \geq 0$
-	\item $n \in \mathds{N} \wedge n \geq 1$
-\end{pfenum}}
-\define{\begin{pfenum}
-	\item $\textit{Conc}(L,n) \defeq \begin{cases}
-			\textit{Seq}(L,n) \\
-			\textit{Seq}(L',i) : i,j \in \mathds{N} \wedge i + j = n \wedge j \geq 1 \wedge L' = \textit{Conc}(L,j)  \\ 
-			L' \sqcup_\mathds{L} L'' : 
-		 	 i = n-1 \wedge 0 \leq j \leq i \wedge L' = \textit{Conc}(L,j) \wedge L'' = \textit{Conc}(L,i)
-	           \end{cases}$
-\end{pfenum}}
-\prove{For any execution $L^n = \textit{Conc}(L,n)$ such that $n \geq 1$, it is always true that $\forall_{(id,b) \in \texttt{balances}(L^n)} b \geq 0$.}
-\begin{proof}
-	$\begin{cases}
-		\textit{Seq}(L,n) \\
-		L' = \textit{Conc}(L,i) \leadsto \textit{Seq}(L',j) : i \geq 1 \wedge 	i + j = n \\
-		(L' = \textit{Conc}(L,i) ~||~ L'' =\textit{Conc}(L,k))  \leadsto L' \sqcup_\mathds{L} L'' : i \leq n-1 \wedge 0 \leq k \leq i
-	\end{cases}$
-
-	\pf~ 	All operations in \textit{Ops} only modify the state of a single account. This is true even for transferring tokens because the sending (\texttt{giveTo}) is decoupled from the reception (\texttt{ackFrom}). 
-\end{proof}
-
-
-\subsubsection{Concurrent Operations on the Same Account May Result in Negative Balance}
-
-\begin{proof}
-	\assume{\begin{pfenum}
-		\item $A,B,C \in \mathds{A} \wedge A_{\scriptsize \textbf{id}} \in \mathds{C} \wedge  A_{\scriptsize \textbf{id}} \neq  B_{\scriptsize \textbf{id}}  \neq  C_{\scriptsize \textbf{id}} $
-		\item $\texttt{balance}(A) \geq 0 \wedge \texttt{balance}(B) \geq 0 \wedge \texttt{balance}(C) \geq 0$
-		\item $x,x' \in \mathds{R}^+ \wedge x > 0 \wedge x' > 0$
-	\end{pfenum}}
-\end{proof}
-
-For every statement, we list the properties that have changed between the original state of an account, and its following states marked with $'$ and $''$. Every non-listed properties stays the same. Except for transfers between accounts, we do not list most cases of sequential and concurrent updates on accounts with different identifiers, such as $A$ and $B$, because state updates are independent.
-
-
-\textbf{Concurrent:}	
-\begin{proof}
-	\case{$\texttt{create} ~||~ \texttt{create}$}
-	\begin{proof}
-		\case{$(A' = \texttt{create}(A,x) ~||~ A'' = \texttt{create}(A,x')) \leadsto A''' = A' \sqcup_\mathds{A} A'' $}
-		\begin{proof}
-			\begin{pfenum}
-				\item $A'''_\uparrow = A_\uparrow + \texttt{max}(x,x')$
-				\item $\texttt{balance}(A''') = \texttt{balance}(A) + \texttt{max}(x,x') > 0$
-			\end{pfenum}
-		\end{proof}
-	\end{proof}
+	\item $A \in \mathds{A} : \texttt{balance}(A) \geq 0$
+	\item $A' \in \mathds{A} : \texttt{balance}(A') \geq 0$
 	
-	\case{$\texttt{create} ~||~ \texttt{burn}$}
+	\item $\Delta_\downarrow \defeq   |A_\downarrow - A'_\downarrow| $
+	\item $\Delta_\rightarrow \defeq    \sum\limits_{id \in A_{\rightarrow *} \cap A'_{\rightarrow *}} |A_{\rightarrow}[id]-A'_{\rightarrow}[id]| + \sum\limits_{id \in A_{\rightarrow *} \backslash A'_{\rightarrow *}}A_{\rightarrow}[id]  +  \sum\limits_{id \in A'_{\rightarrow *} \backslash A_{\rightarrow *}}A'_{\rightarrow}[id] $
+	\item $\Delta_\uparrow \defeq   |A_\uparrow - A'_\uparrow| $
+	\item $\Delta_\leftarrow \defeq    \sum\limits_{id \in A_{\leftarrow *} \cap A'_{\leftarrow *}} |A_{\leftarrow}[id]-A'_{\leftarrow}[id]| + \sum\limits_{id \in A_{\leftarrow *} \backslash A'_{\leftarrow *}}A_{\leftarrow}[id]  +  \sum\limits_{id \in A'_{\leftarrow *} \backslash A_{\leftarrow *}}A'_{\leftarrow}[id] $
+\end{pfenum}}
+\assume{$A_{\scriptsize \textbf{id}} = A'_{\scriptsize \textbf{id}}$}
+\prove{$\texttt{balance}(A \sqcup_\mathds{A} A') < 0 \Leftrightarrow  \Delta_\downarrow  + \Delta_\rightarrow >  \Delta_\uparrow  + \Delta_\leftarrow + \texttt{balance}(A \sqcap_\mathds{A} A')$}
+\begin{proof}
+
+	\step{lbl:eq}{$\texttt{balance}(A \sqcup_\mathds{A} A') = \texttt{balance}(A \sqcap_\mathds{A} A') +  \Delta_\uparrow  + \Delta_\leftarrow  - \Delta_\downarrow  - \Delta_\rightarrow$}
 	\begin{proof}
-		\case{$(A' = \texttt{create}(A,x) ~||~ A'' = \texttt{burn}(A,x')) \leadsto A''' = A' \sqcup_\mathds{A} A'' $}
+		\step{lbl:min-max-eq}{\assume{\begin{pfenum}
+			\item $x,x' \in \mathds{R}$
+		\end{pfenum}}
+		\prove{$\texttt{max}(x,x') = \texttt{min}(x,x') + | x - x' |$}}
 		\begin{proof}
-			\begin{pfenum}
-				\item $A'''_\uparrow = A'_\uparrow = A_\uparrow + x$
-			\end{pfenum}
-			
-			\case{$\texttt{balance}(A) \geq x'$}
+			\step{lbl:3-1}{\case{$x > x'$}}
 			\begin{proof}
-				\begin{pfenum}
-					\item $A'''_\downarrow = A''_\downarrow = A_\downarrow + x'$	
-					\item $\texttt{balance}(A''') = \texttt{balance}(A) + x - x'$	
-				\end{pfenum}
-				
-				\case{$\texttt{balance}(A) + x \geq x'$}
+				\step{}{$x = \texttt{min}(x,x') + | x - x' |$}
 				\begin{proof}
-					\begin{pfenum}
-						\item $\texttt{balance}(A''') \geq 0$
-					\end{pfenum}
+					By assumption, therefore $\texttt{max}(x,x)' = x$.
 				\end{proof}
 				
-				\case{$\texttt{balance}(A) + x < x'$}
+				\step{}{$x = x' + | x - x' |$}
 				\begin{proof}
-					\begin{pfenum}
-						\item $\texttt{balance}(A''') < 0$
-					\end{pfenum}
+					By assumption, therefore $\texttt{min}(x,x)' = x'$.
+				\end{proof}
+				
+				\qedstep
+				\begin{proof}
+					Because $x - x' = | x - x' |$ and $x - x' > 0$.
 				\end{proof}
 			\end{proof}
 			
-			\case{$\texttt{balance}(A) < x'$}
+			\step{lbl:3-2}{\case{$x < x'$}}
 			\begin{proof}
-				\begin{pfenum}
-					\item $A'''_\downarrow = A''_\downarrow = A_\downarrow$	
-					\item $\texttt{balance}(A''') = \texttt{balance}(A) + x > 0$	
-				\end{pfenum}
+				\step{}{$x' = \texttt{min}(x,x') + | x - x' |$}
+				\begin{proof}
+					By assumption, therefore $\texttt{max}(x,x)' = x'$.
+				\end{proof}
+				
+				\step{}{$x' = x + | x - x' |$}
+				\begin{proof}
+					By assumption, therefore $\texttt{min}(x,x)' = x$.
+				\end{proof}
+				
+				\qedstep
+				\begin{proof}
+					Because $x'-x = | x - x' |$ and $x' - x > 0$.
+				\end{proof}
 			\end{proof}
 			
-
+			\step{}{\case{$x = x'$}}
+			\begin{proof}
+				By replacing everything with $x$: $x = x + | x - x |$.
+			\end{proof}
+			
+			\qedstep
+			\begin{proof}
+				No other cases and true for all of them.
+			\end{proof}
 		\end{proof}
+		
+		\step{}{\begin{pfenum}
+			\item $\texttt{max}(A_\uparrow, A'_\uparrow) = \texttt{min}(A_\uparrow, A'_\uparrow) + | A_\uparrow - A'_\uparrow |$
+			\item $\texttt{max}(A_\downarrow, A'_\downarrow) = \texttt{min}(A_\downarrow, A'_\downarrow) + | A_\downarrow - A'_\downarrow |$
+		\end{pfenum}}
+		\begin{proof}
+			By replacing $x$ respectively with $A_\uparrow$ and $A_\downarrow$ in \stepref{lbl:min-max-eq}.
+		\end{proof}
+		
+		\step{}{\assume{\begin{pfenum}
+			\item $id \in A_{\leftarrow *} \wedge id \in A'_{\leftarrow *}$
+		\end{pfenum}}
+		\prove{\begin{pfenum}
+			\item $\texttt{max}(A_{\leftarrow}[id],A'_{\leftarrow}[id]) = \texttt{min}(A_{\leftarrow}[id],A'_{\leftarrow}[id]) + | A_{\leftarrow}[id] - A'_{\leftarrow}[id] |$
+			\item $\texttt{max}(A_{\rightarrow}[id],A'_{\rightarrow}[id]) = \texttt{min}(A_{\rightarrow}[id],A'_{\rightarrow}[id]) + | A_{\rightarrow}[id] - A'_{\rightarrow}[id] |$
+		\end{pfenum}}}
+		\begin{proof}
+			By replacing $x$ respectively with $A_\leftarrow[id]$ and $A_\rightarrow[id]$ in \stepref{lbl:min-max-eq}.
+		\end{proof}
+		
+		\step{}{\define{\begin{pfenum}
+			\item $\textit{debits}_{A \sqcup_\mathds{A} A'} =
+							\texttt{max}(A_\uparrow, A'_\uparrow) 
+		                                         + \sum\limits_{id \in A_{\leftarrow *} \cap A'_{\leftarrow *}}\texttt{max}(A_{\leftarrow}[id], A'_{\leftarrow}[id]) 
+		                                         \newline
+		                                         + \sum\limits_{id \in A_{\leftarrow *} \backslash A'_{\leftarrow *}}A_{\leftarrow}[id] 
+		                                         + \sum\limits_{id \in A'_{\leftarrow *} \backslash A_{\leftarrow *}}A'_{\leftarrow}[id] 
+		                                         $
+		         \item $\textit{credits}_{A \sqcup_\mathds{A} A'} =
+							\texttt{max}(A_\downarrow, A'_\downarrow) 
+		                                         + \sum\limits_{id \in A_{\rightarrow *} \cap A'_{\rightarrow *}}\texttt{max}(A_{\rightarrow}[id], A'_{\rightarrow}[id]) 
+		                                         \newline
+		                                         + \sum\limits_{id \in A_{\rightarrow *} \backslash A'_{\rightarrow *}}A_{\rightarrow}[id] 
+		                                         + \sum\limits_{id \in A'_{\rightarrow *} \backslash A_{\rightarrow *}}A'_{\rightarrow}[id] 
+		                                         $                             
+			\end{pfenum}}
+		\prove{
+			$\texttt{balance}(A \sqcup_\mathds{A} A') = \textit{debits}_{A \sqcup_\mathds{A} A'}+ \textit{credits}_{A \sqcup_\mathds{A} A'}$
+		}}
+		\begin{proof}
+			By definition of \texttt{balance} (Alg.~\ref{alg:account}) and $A \sqcup_\mathds{A} A'$ (Alg.~\ref{alg:account-ordering}).
+		\end{proof}
+		
+		\step{}{\define{\begin{pfenum}
+			\item $\textit{debits}_{A \sqcap_\mathds{A} A'} =
+							\texttt{min}(A_\uparrow, A'_\uparrow) 
+		                                         + \sum\limits_{id \in A_{\leftarrow *} \cap A'_{\leftarrow *}}\texttt{min}(A_{\leftarrow}[id], A'_{\leftarrow}[id])
+		                                         $
+		         \item $\textit{credits}_{A \sqcap_\mathds{A} A'} =
+							\texttt{min}(A_\downarrow, A'_\downarrow) 
+		                                         + \sum\limits_{id \in A_{\rightarrow *} \cap A'_{\rightarrow *}}\texttt{min}(A_{\rightarrow}[id], A'_{\rightarrow}[id]) 
+		                                         $                             
+			\end{pfenum}}
+		\prove{
+			$\texttt{balance}(A \sqcap_\mathds{A} A') = \textit{debits}_{A \sqcap_\mathds{A} A'}+ \textit{credits}_{A \sqcap_\mathds{A} A'}$
+		}}
+		\begin{proof}
+			By definition of \texttt{balance} (Alg.~\ref{alg:account}) and $A \sqcap_\mathds{A} A'$ (Alg.~\ref{alg:account-hlb}).
+		\end{proof}
+		
+		\qedstep
+		\begin{proof}
+			By the previous steps and rearranging terms according to the $\Delta$ definitions.
+		\end{proof}                      
+	\end{proof}
+
+	\step{}{$\texttt{balance}(A \sqcup_\mathds{A} A') < 0 \Leftrightarrow  \texttt{balance}(A \sqcap_\mathds{A} A') + \Delta_\uparrow  + \Delta_\leftarrow - \Delta_\downarrow  - \Delta_\rightarrow < 0$}
+	\begin{proof}
+		By applying inequality to both sides of \stepref{lbl:eq}.
 	\end{proof}
 	
-	\case{$\texttt{create} ~||~ \texttt{giveTo}$}
-	
-	\case{$\texttt{create} ~||~ \texttt{ackFrom}$}
-	
-	\case{$\texttt{burn} ~||~ \texttt{burn}$}
-	
-	\case{$\texttt{burn} ~||~ \texttt{giveTo}$}
-	
-	\case{$\texttt{burn} ~||~ \texttt{ackFrom}$}
-	
-	\case{$\texttt{giveTo} ~||~ \texttt{giveTo}$}
-	
-	\case{$\texttt{giveTo} ~||~ \texttt{ackFrom}$}
-	
-	\case{$\texttt{ackFrom} ~||~ \texttt{ackFrom}$}
-	
+	\qedstep
+	\begin{proof}
+		By rearranging terms.	
+	\end{proof}
 \end{proof}
 
+\subsubsection{Safety: Net Balance}
 
-\subsubsection{Safety: tokens acknowledged were always given before}
+\define{\begin{pfenum}
+	\item $\mathcal{L}$ is the set of all ledger replicas at any time
+	\item $L =  \bigsqcup_\mathds{L} \mathcal{L}$ is the least upper bound on the state of replicas
+	\item $\mathcal{A} = \{ L[id] : id \in L\}$ is the set of account states
+	\item $\mathcal{C} = \{  A \in \mathcal{A} : A_{\scriptsize \textbf{id} \in \mathds{C}} \}$ are the accounts allowed to create tokens
+	\item $\mathcal{A}^{\geq 0} = \{ A \in \mathcal{A} : \texttt{balance}(A) \geq 0 \} $ are the accounts with positive balances
+	\item $\mathcal{A}^{< 0} = \{ A \in \mathcal{A} : \texttt{balance}(A) < 0 \} $ are the accounts with negative balances
+\end{pfenum}}
+\prove{
+	$\sum\limits_{A \in \mathcal{A}^{\geq 0}} \texttt{balance}(A) \leq  
+		\sum\limits_{C \in \mathcal{C}} C_\uparrow 
+		- \sum\limits_{A \in \mathcal{A}} A_\downarrow 
+		+ \sum\limits_{A \in \mathcal{A}^{< 0}}  -\texttt{balance}(A) $.}
+\begin{proof}
+	\step{}{$\sum\limits_{A \in \mathcal{A}} \texttt{balance}(A) \leq  
+		\sum\limits_{C \in \mathcal{C}} C_\uparrow 
+		- \sum\limits_{A \in \mathcal{A}} A_\downarrow$}
+	\begin{proof}
+		By sending  $\sum\limits_{A \in \mathcal{A}^{< 0}}  -\texttt{balance}(A)$ on the other side of the inequality, removing the double negation, and combining in a single summation.
+	\end{proof}
+	
+	\step{}{$\sum\limits_{A \in \mathcal{A}} A_\uparrow
+	 	   +\sum\limits_{A \in \mathcal{A}} \sum\limits_{id \in A_{\leftarrow}} A_\leftarrow[id]
+		   -\sum\limits_{A \in \mathcal{A}} A_\downarrow
+		   -\sum\limits_{A \in \mathcal{A}} \sum\limits_{id \in A_{\rightarrow}} A_\rightarrow[id] 
+	 \leq  
+		\sum\limits_{C \in \mathcal{C}} C_\uparrow 
+		- \sum\limits_{A \in \mathcal{A}} A_\downarrow$}
+	\begin{proof}
+		By replacing \texttt{balance} by its definition.
+	\end{proof}
+	
+	\step{lbl:sending-receiving-ineq-sums}{$
+	 	\sum\limits_{A \in \mathcal{A}} \sum\limits_{id \in A_{\leftarrow}} A_\leftarrow[id]
+	 \leq  
+		\sum\limits_{A \in \mathcal{A}} \sum\limits_{id \in A_{\rightarrow}} A_\rightarrow[id] 
+	 $}
+	\begin{proof}
+		Because $A_\uparrow = 0$ for all $A \notin \mathcal{C}$ and removing from both sides of the inequality. By removing $\sum\limits_{A \in \mathcal{A}} A_\downarrow$ from both sides of the inequality
+	\end{proof}
+	
+		
+	\step{lbl:sending-receiving-ineq-item}{For every pair of accounts $R,S \in \mathcal{A}$, $R_{\leftarrow}[S_{\scriptsize \textbf{id}}] \leq S_{\rightarrow}[R_{\scriptsize \textbf{id}}]$ always.}
+	\begin{proof}
+		The only operation that modifies $R_{\leftarrow}$ is \texttt{ackFrom} and every update either uses the current value of $S_{\rightarrow}[R_{\scriptsize \textbf{id}}]$, or the greatest of the previous value of  $R_{\leftarrow}[S_{\scriptsize \textbf{id}}]$, which can only be a previous value of  $S_{\rightarrow}[R_{\scriptsize \textbf{id}}]$, and $S_{\rightarrow}[R_{\scriptsize \textbf{id}}]$.
+	\end{proof}
+	
+	\qedstep
+	\begin{proof}
+		Because \stepref{lbl:sending-receiving-ineq-item} is true for all pairs and $R_{\leftarrow}[S_{\scriptsize \textbf{id}}]$ exists only if $S_{\rightarrow}[R_{\scriptsize \textbf{id}}]$, \stepref{lbl:sending-receiving-ineq-sums} is true, which connects to the proposition by doing the algebric manipulations above in reverse.
+	\end{proof}
+\end{proof}
 
-%\begin{lemma}
-For every pair of accounts $R,S \in \mathds{A}$, it is always true that $R_{\leftarrow S.id} \leq S_{\rightarrow R.id}$.
-%\end{lemma}
+\subsubsection{Liveness: Eventual Balance}
 
-%\begin{theorem}
-(Safety): It is always true that $\sum\limits_{A \in \mathds{A}} \texttt{balance}(A) \leq  \sum\limits_{C \in \{ A : A \in \mathds{A} \wedge A_{\scriptsize \textbf{id}} \in \mathds{C} \}} C_\uparrow - \sum\limits_{A \in \mathds{A}} A_\downarrow$.
-%\end{theorem}
-
-
-\subsubsection{Liveness: tokens sent are eventually received}
-
-%\begin{lemma}
-If a receiver account $R \in \mathds{A}$ eventually acknowledges all amounts sent from a sender account $S \in \mathds{A}$ to $R$, then eventually $R_{\leftarrow S.id} = S_{\rightarrow R.id}$.
-%\end{lemma}
-
-%\begin{theorem}
-(Liveness): If every account $R \in \mathds{A}$ eventually acknowledges all amounts sent by every account $S \in \mathds{A}$ (including $R=S$), then eventually $\sum\limits_{A \in \mathds{A}} \texttt{balance}(A) = \sum\limits_{C \in \mathds{C}} C_\uparrow - \sum\limits_{A \in \mathds{A}} A_\downarrow$.
-%\end{theorem}
-
-\section{System Model}
+\define{~Same definitions as previous section.}
+\prove{If no more \texttt{giveTo} operation is performed and every receiver account $R \in \mathds{A}$ eventually acknowledges all amounts sent by every sender account $S \in \mathds{A}$ (including $R=S$) with \texttt{ackFrom}, then eventually: \newline 
+    $\sum\limits_{A \in \mathcal{A}^{\geq 0}} \texttt{balance}(A) =  
+		\sum\limits_{C \in \mathcal{C}} C_\uparrow 
+		- \sum\limits_{A \in \mathcal{A}} A_\downarrow 
+		+ \sum\limits_{A \in \mathcal{A}^{< 0}}  -\texttt{balance}(A) $.}
+\pf~ If all receiver accounts $R \in \mathcal{A}$ eventually acknowledge all amounts sent from sender accounts $S \in \mathcal{A}$ to $R$, then eventually $R_{\leftarrow}[S_{\scriptsize \textbf{id}}] = S_{\rightarrow}[R_{\scriptsize \textbf{id}}]$. This turns the inequality from the previous section into an equality.
 
 
-
-
-\section{Related Work}
-
-Consensus number of a crypto-currency.
-
- In contrast to Bitcoin~\cite{bitcoin}, we decouple the sending and reception of tokens in a transaction: upon a \textit{give} operation, the balance of the sender is immediately decreased but the receiver balance is not immediately increased by the same amount.  The increase on the receiver side happens only  after an explicit \textit{acknowledgement}. 
- 
-Delta-CRDT (see portfolio example)~\cite{Almeida2018delta}
- 
-\section{Future Work}
- 
-\subsection{Limiting the Creator Set}
-
-\subsection{Tolerating Arbitrary Failures}
-
-	\subsubsection{Collusion-Resistance}
-
-\subsection{Limiting the Visibility of Transactions}
-
-\subsection{Eventually-Consistent Reputation and Access-Control Mechanisms}
-
-\subsection{Implementation Techniques for Resource-Limited Devices}
-
-\section{Conclusion}
-\label{sec:conclusion}
-
-Implementation techniques for restricting token creation, which can potentially be based on cryptographic techniques, will be covered in future work.
-
-\section{Acknowledgements}
-\label{sec:acknowledgements}
-
-We thank Christian F. Tschudin for fostering a research environment allowing detours and playfulness in the process, as well as providing financial support for this work and feedback on earlier versions of this work. The idea of investigating the possibilities offered by allowing accounts to converge to a negative balance in some circumstances was first suggested by him. Once the prejudice against negative balances was abandoned, that opened the possibility of expressing accounts as state-based CRDTs and greatly simplified the design.
-
-I would also like to thank Prof. Dr. Tschudin for having initiated a CRDT seminar and invited me to co-teach it, which created the opportunity of learning how to formalize CRDT algorithms. I was initially planning to write a system paper on a similar design. However, after 6-7 design iterations, it became obvious that the design had subtleties that greatly benefitted from a more formal treatment to tease out and get right. The teaching of the CRDT seminar happened exactly at the right time to review fundamentals of distributed algorithms in general, and CRDTs in particular, to ramp up the skills to carry such work.
-
-
-
-\newpage
-
-\bibliographystyle{plainurl}
-\bibliography{main}
-
-\newpage
-\appendix
 
 \section{Notation and Conventions}
 \label{apdx:notation}
@@ -1126,6 +1345,215 @@ Apart from these, we use common mathematical and pseudo-code conventions:
 	 \item $\textbf{for}~x ~\textbf{in}~ X~\textbf{do}$ iterates over all values in $X$ sequentially assigning them to $x$.
 \end{itemize}
 
-
+%\section{Unused material}
+%
+%\begin{proof}
+%	\assume{\begin{pfenum}
+%		\item $A,B,C \in \mathds{A} \wedge A_{\scriptsize \textbf{id}} \in \mathds{C} \wedge  A_{\scriptsize \textbf{id}} \neq  B_{\scriptsize \textbf{id}}  \neq  C_{\scriptsize \textbf{id}} $
+%		\item $\texttt{balance}(A) \geq 0 \wedge \texttt{balance}(B) \geq 0 \wedge \texttt{balance}(C) \geq 0$
+%		\item $x,x' \in \mathds{R}^+ \wedge x > 0 \wedge x' > 0$
+%	\end{pfenum}}
+%\end{proof}
+%
+%For every case, we list the properties that have changed between the original state of an account, and its following states marked with $'$. Every non-listed properties stays the same. Except for transfers between accounts, we do not list most cases of sequential and concurrent updates on accounts with different identifiers, such as $A$ and $B$, because state updates are independent.
+%
+%
+%\subsubsection{Sequences of Ledger Operations Maintain a Non-Negative Balance}
+%
+%\assume{\begin{pfenum}
+%	\item $L \in \mathds{L}$
+%	\item $\forall_{(id,b) \in \texttt{balances}(L)} b \geq 0$
+%	\item $n \in \mathds{N}$
+%\end{pfenum}}
+%\define{\begin{pfenum}
+%		\item $\textit{op}(L, id) \defeq \begin{cases}
+%	        			\texttt{initialize$_\mathds{A}$}(id) :  id \notin L_*  \\
+%				\texttt{create}(L[id], x) : x \in \mathds{R} \wedge id \in L_* \\
+%				\texttt{burn}(L[id], x) : x \in \mathds{R} \wedge id \in L_* \\
+%				\texttt{giveTo}(L[id], x, id') : x \in \mathds{R} \wedge id \in L_* \wedge id' \in \mathds{I} \\
+%				\texttt{ackFrom}(L[id], L[id'],) :  id \in L_* \wedge id' \in L_*  \\
+%			\end{cases}$
+%		\item $\textit{Seq}(L, n) \defeq  \begin{cases}
+%			n = 0 & L \\
+%			n \geq 1 & \texttt{add}(L^{n-1}, op(L^{n-1})) :  L^{n-1} = \textit{Seq}(L, n-1)
+%		\end{cases}$
+%\end{pfenum}}
+%\prove{For any sequence $L^n  = \textit{Seq}(L, n)$ such that $n \geq 1$, it is always true that \newline $\forall_{(id,b) \in \texttt{balances}(L^n)} b \geq 0$.}
+%\begin{proof}
+%	\pf~ 	
+%\end{proof}
+%
+%
+%
+%
+%\subsection{Causal history modeling}
+%
+%\define{\begin{pfenum}
+%	\item $r : r \in \mathds{N} \wedge r \geq 2$ is the number of concurrent replicas
+%	\item $L^0 \defeq \{ L^0_a : a \in [1,r] \wedge L^0_a \in \mathds{L} \}$ is the set of initial states of replicas
+%	%\item $O : |O| \geq 0$ is the set of distinct states generated by local operations on replicas
+%	%\item $M : |M| \geq r-1$ is the set of distinct states generated by merge operations between replicas
+%	\item $T\defeq \{ L^i_a : L^i_a  \in \mathds{L} \wedge a \in [1,r] \wedge i~\text{is unique}~ \}$ is the set of states generated by intermediate transitions
+%	\item $L^\top_a$ is the final state on replica $a$
+%	\item $S \defeq L^0 \cup T \cup \{ L^\top_a \}$ is the set of causal states of $L^\top_a$
+%	\item $\textit{transition} = \begin{cases}
+%		L^i_a \anyop{op(id)} L^j_a                                                     & ~\text{if}~ L^j_a = \texttt{add}(L^i_a, op(L^i_a, id)) : L^i_a, L^j_a \in S \wedge \textit{id} \in \mathds{I} \\
+%		L^i_a \mergeop L^k_a \wedge L^j_b \mergeop L^k_a     & ~\text{if}~ L^k_a = L^i_a \sqcup_\mathds{L} L^j_b : L^i_a, L^j_b, L^k_a \in S
+%	\end{cases}$
+%	\item $E \defeq \{ \textit{transition} \}$ 
+%	\item $L^i_a \leadsto_E L^j_b$ means that there exists a sequence of $\rightarrow$ in $E$ from $L^i_a$ to $L^j_b$.
+%	\item $L^i_a ~||_E~ L^j_b$ means that $L^i_a$ and $L^j_b$ are the result of concurrent transitions ($L^i_a \not \leadsto_E L^j_b$ and $L^j_b \not \leadsto_E L^i_a$).
+%	\item $ L^i_a \anyop{\textit{credit}(id,x)} L^j_a \defeq \begin{cases}
+%		\texttt{burn}(L^i_a[id],x) : \textit{id} \in \mathds{I} \wedge x \in \mathds{R} \\ 	
+%		\texttt{giveTo}(L^i_a[id],x,id_2) :  \textit{id}, \textit{id}_2 \in \mathds{I} \wedge x \in \mathds{R} \\ 	
+%	\end{cases}$
+%
+%\end{pfenum}}
+%\assume{\begin{pfenum}
+%	\item \textit{state crdt}: $L^k_a  \in S \Rightarrow L^k_a = \begin{cases} 
+%		op(L^i_a, id) : L^i_a \in S \wedge i \neq k  ~\textit{(local operation)}\\ 
+%		L^i_a \sqcup_\mathds{L} L^j_b : L^i_a, L^j_b \in S \wedge a \neq b \wedge i \neq k \wedge k \neq j ~\textit{(merge)}	
+%	\end{cases}$
+%	\item \textit{positive initial balance}: $\forall (id,b) \in \texttt{balances}(L^0_a) : L^0_a \in L^0 \Rightarrow b \geq 0$
+%	\item \textit{causal history}: \begin{pfenum}
+%		\item \textit{sequential replicas}: $L^i_a, L^j_a \in S \wedge j \neq i \Rightarrow L^i_a \leadsto L^j_a \vee L^j_a \leadsto L^j_a$
+%		\item \textit{acyclic transitions}: $L^i_a \anyop{z} L^j_b \in E \Rightarrow   L^j_b \not \leadsto_E  L^i_a$
+%		\item \textit{happen-before final state}: $L^j_b \in S \Rightarrow L^j_b \leadsto_E L^\top_a$	
+%	\end{pfenum}
+%\end{pfenum}}
+%%\prove{For any execution $L^n = \textit{Conc}(L,n)$ such that $n \geq 1$, it is always true that $\forall_{(id,b) \in \texttt{balances}(L^n)} b \geq 0$.}
+%
+%
+%
+%%$ L^i_a \anyop{\textit{credit}_1(id,x)} L^j_a,  L^k_b \anyop{\textit{credit}_2(id,y)} L^l_b \in E $
+% %                                $: \texttt{balance}((L^i_a \sqcup_\mathds{L} L^k_b)[id_1])) < x + y \wedge L^j_a ~||_E~ L^l_b$$
+%
+%
+%\begin{proof}
+%	\assume{\begin{pfenum}
+%		\item $A,B,C \in \mathds{A} \wedge A_{\scriptsize \textbf{id}} \in \mathds{C} \wedge  A_{\scriptsize \textbf{id}} \neq  B_{\scriptsize \textbf{id}}  \neq  C_{\scriptsize \textbf{id}} $
+%		\item $\texttt{balance}(A) \geq 0 \wedge \texttt{balance}(B) \geq 0 \wedge \texttt{balance}(C) \geq 0$
+%		\item $x,x' \in \mathds{R}^+ \wedge x > 0 \wedge x' > 0$
+%	\end{pfenum}}
+%\end{proof}
+%
+%For every statement, we list the properties that have changed between the original state of an account, and its following states marked with $'$ and $''$. Every non-listed properties stays the same. Except for transfers between accounts, we do not list most cases of sequential and concurrent updates on accounts with different identifiers, such as $A$ and $B$, because state updates are independent.
+%
+%
+%\textbf{Concurrent:}	
+%\begin{proof}
+%	\case{$\texttt{create} ~||~ \texttt{create}$}
+%	\begin{proof}
+%		\case{$(A' = \texttt{create}(A,x) ~||~ A'' = \texttt{create}(A,x')) \leadsto A''' = A' \sqcup_\mathds{A} A'' $}
+%		\begin{proof}
+%			\begin{pfenum}
+%				\item $A'''_\uparrow = A_\uparrow + \texttt{max}(x,x')$
+%				\item $\texttt{balance}(A''') = \texttt{balance}(A) + \texttt{max}(x,x') > 0$
+%			\end{pfenum}
+%		\end{proof}
+%	\end{proof}
+%	
+%	\case{$\texttt{create} ~||~ \texttt{burn}$}
+%	\begin{proof}
+%		\case{$(A' = \texttt{create}(A,x) ~||~ A'' = \texttt{burn}(A,x')) \leadsto A''' = A' \sqcup_\mathds{A} A'' $}
+%		\begin{proof}
+%			\begin{pfenum}
+%				\item $A'''_\uparrow = A'_\uparrow = A_\uparrow + x$
+%			\end{pfenum}
+%			
+%			\case{$\texttt{balance}(A) \geq x'$}
+%			\begin{proof}
+%				\begin{pfenum}
+%					\item $A'''_\downarrow = A''_\downarrow = A_\downarrow + x'$	
+%					\item $\texttt{balance}(A''') = \texttt{balance}(A) + x - x'$	
+%				\end{pfenum}
+%				
+%				\case{$\texttt{balance}(A) + x \geq x'$}
+%				\begin{proof}
+%					\begin{pfenum}
+%						\item $\texttt{balance}(A''') \geq 0$
+%					\end{pfenum}
+%				\end{proof}
+%				
+%				\case{$\texttt{balance}(A) + x < x'$}
+%				\begin{proof}
+%					\begin{pfenum}
+%						\item $\texttt{balance}(A''') < 0$
+%					\end{pfenum}
+%				\end{proof}
+%			\end{proof}
+%			
+%			\case{$\texttt{balance}(A) < x'$}
+%			\begin{proof}
+%				\begin{pfenum}
+%					\item $A'''_\downarrow = A''_\downarrow = A_\downarrow$	
+%					\item $\texttt{balance}(A''') = \texttt{balance}(A) + x > 0$	
+%				\end{pfenum}
+%			\end{proof}
+%			
+%
+%		\end{proof}
+%	\end{proof}
+%	
+%	\case{$\texttt{create} ~||~ \texttt{giveTo}$}
+%	
+%	\case{$\texttt{create} ~||~ \texttt{ackFrom}$}
+%	
+%	\case{$\texttt{burn} ~||~ \texttt{burn}$}
+%	
+%	\case{$\texttt{burn} ~||~ \texttt{giveTo}$}
+%	
+%	\case{$\texttt{burn} ~||~ \texttt{ackFrom}$}
+%	
+%	\case{$\texttt{giveTo} ~||~ \texttt{giveTo}$}
+%	
+%	\case{$\texttt{giveTo} ~||~ \texttt{ackFrom}$}
+%	
+%	\case{$\texttt{ackFrom} ~||~ \texttt{ackFrom}$}
+%	
+%\end{proof}
+%
+%
+%
+%
+%
+%\subsubsection{Ledger Operations on Different Accounts (Sequential or Concurrent) Always Result in Non-Negative Balances}
+%
+%\define{\begin{pfenum}
+%	\item $L^i \in \mathds{L} : (id, b) \in \texttt{balances}(L^i)  \Rightarrow b \geq 0$
+%	\item $L^k \in \mathds{L} : (id, b) \in \texttt{balances}(L^k)  \Rightarrow b \geq 0$
+%	\item $\textit{id}_1, \textit{id}_2 \in \mathds{I} : id_1 \neq id_2$
+%	\item $L^j=\texttt{add}(L^i,op(L^i,id_1))$ 
+%	\item $L^l=\texttt{add}(L^k,op(L^k,id_2))$
+%\end{pfenum}}
+%\assume{\begin{pfenum}
+%	\item $ (id, b) \in \texttt{balances}(L^i \sqcup_\mathds{L} L^k)  \Rightarrow b \geq 0$
+%\end{pfenum}}
+%\prove{
+%$ (id, b) \in \texttt{balances}(L^j \sqcup_\mathds{L} L^l)  \Rightarrow b \geq 0$}
+%\pfsketch~ By case analysis. For all operations that never decrease the balance, this is trivially satisfied. For operations that may decrease the balance by an amount $x$ (\texttt{burn} and \texttt{giveTo}), the pre-condition that the balance is larger or equal to $x$ for the account to be modified guarantees that the resulting balance of the same account is non-negative. Finally, because balances of merged initial states are non-negative and both operations modify different accounts, both operations can be considered as independent sequential operation on their respective account that are going to be merged in the same ledger.
+%
+%
+%\subsubsection{Concurrent Operations on the Same Account May Result in Negative Balance}
+%
+%\prove{Only concurrent \texttt{burn} and \texttt{giveTo} operations on different replicas for the same \textit{id} may result in negative balances. 
+%
+%Formally: \newline
+% $  \exists L^i_a  \in S \wedge (id,b) \in \texttt{balances}(L^i_a) : b < 0 \Rightarrow $ \newline
+% $ \exists L^i_a \anyop{\textit{credit}_1(id,x)} L^j_a,  L^k_b \anyop{\textit{credit}_2(id,y)} L^l_b \in E $
+% $: \texttt{balance}((L^i_a \sqcup_\mathds{L} L^k_b)[id_1])) < x + y \wedge L^j_a ~||_E~ L^l_b$
+%}
+%
+%%{If $\forall  L^j_a = op_1(L^i_a),  L^l_b = op_2(L^k_b) \in E$ such that $op_1$ and $op_2$ are \texttt{burn} or \texttt{giveTo} operations on the same $id$ and $L^j_a  ~\not{||_E}~ L^k_b$ then $\forall L^a_i \in S : (id,b) \in \texttt{balances}(L^a_i) : b \geq 0 $.}
+%
+%\begin{proof}
+%	%$\begin{cases}
+%	%	\textit{Seq}(L,n) \\
+%	%	L' = \textit{Conc}(L,i) \leadsto \textit{Seq}(L',j) : i \geq 1 \wedge 	i + j = n \\
+%	%	(L' = \textit{Conc}(L,i) ~||~ L'' =\textit{Conc}(L,k))  \leadsto L' \sqcup_\mathds{L} L'' : i \leq n-1 \wedge 0 \leq k \leq i
+%	%\end{cases}$
+%
+%	\pfsketch~ All operations in \textit{Ops} only modify the state of a single account. This is true even for transferring tokens because the sending (\texttt{giveTo}) is decoupled from the reception (\texttt{ackFrom}). 
+%\end{proof}
 
 \end{document}  

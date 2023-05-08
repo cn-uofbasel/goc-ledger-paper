@@ -221,13 +221,6 @@ During the Fourth Quarter of 2017.}},
  month={Jan}
 }
 
-@misc{hypercore,
-  title={{Hypercore Protocol}},
-  author={Frazee, Paul and Wosh, Andre and Madsen, Mathias Buus},
-  year={2020},
-  note={Retrieved 2020-08-08 from \url{https://hypercore-protocol.org/}}
-}
-
 @article{robinson2018dat,
   title={{The Dat Project, an open and decentralized research data tool}},
   author={Robinson, Danielle C and Hand, Joe A and Madsen, Mathias Buus and McKelvey, Karissa R},
@@ -242,12 +235,13 @@ During the Fourth Quarter of 2017.}},
 
 @inproceedings{tarr2019ssb,
 author = {Tarr, Dominic and Lavoie, Erick and Meyer, Aljoscha and Tschudin, Christian},
-title = {Secure Scuttlebutt: An Identity-Centric Protocol for Subjective and Decentralized Applications},
+title = {{Secure Scuttlebutt: An Identity-Centric Protocol for Subjective and Decentralized Applications}},
 year = {2019},
 isbn = {9781450369701},
 publisher = {ACM},
 booktitle = {ICN 2019},
-keywords = {Secure Scuttlebutt, Push vs. Pull, Information-Centric Networking}
+keywords = {Secure Scuttlebutt, Push vs. Pull, Information-Centric Networking},
+doi={10.1145/3357150.3357396}
 }
 
 @misc{ssb-website,
@@ -320,13 +314,6 @@ isbn = {9781595935915},
 publisher = {ACM},
 booktitle = {SOPS 2007},
 keywords = {reliability, performance, scalability},
-}
-
-@book{cachin2011introduction,
-  title={Introduction to reliable and secure distributed programming},
-  author={Cachin, Christian and Guerraoui, Rachid and Rodrigues, Lu{\'\i}s},
-  year={2011},
-  publisher={Springer Science \& Business Media}
 }
 
 @article{tarr2015designing,
@@ -818,11 +805,37 @@ booktitle = {SOPS 2007}
   publisher={Elsevier}
 }
 
-@techreport{guerraoui2021consensus,
-  title={The consensus number of a cryptocurrency (extended version)},
+@inproceedings{guerraoui2021consensus,
+  title={The consensus number of a cryptocurrency},
   author={Guerraoui, Rachid and Kuznetsov, Petr and Monti, Matteo and Pavlovic, Matej and Seredinschi, Dragos-Adrian},
   year={2021},
-  institution={SPRINGER}
+  booktitle={Distributed Computing},
+  pages={1--15},
+  doi={10.1007/s00446-021-00399-2},
+  url={https://doi.org/10.1007/s00446-021-00399-2}
+}
+
+
+@article{collins2020broadcast-payment,
+  author       = {Daniel Collins and
+                  Rachid Guerraoui and
+                  Jovan Komatovic and
+                  Matteo Monti and
+                  Athanasios Xygkis and
+                  Matej Pavlovic and
+                  Petr Kuznetsov and
+                  Yvonne{-}Anne Pignolet and
+                  Dragos{-}Adrian Seredinschi and
+                  Andrei Tonkikh},
+  title        = {Online Payments by Merely Broadcasting Messages (Extended Version)},
+  journal      = {CoRR},
+  volume       = {abs/2004.13184},
+  year         = {2020},
+  eprinttype    = {arXiv},
+  eprint       = {2004.13184},
+  timestamp    = {Wed, 17 Mar 2021 13:51:50 +0100},
+  biburl       = {https://dblp.org/rec/journals/corr/abs-2004-13184.bib},
+  bibsource    = {dblp computer science bibliography, https://dblp.org}
 }
 
 @misc{producercredit,
@@ -2851,7 +2864,7 @@ CRDT Papers
 }
 
 @article{lamport2012write,
-  title={How to write a 21 st century proof},
+  title={How to write a 21st century proof},
   author={Lamport, Leslie},
   journal={Journal of fixed point theory and applications},
   volume={11},
@@ -2859,3 +2872,233 @@ CRDT Papers
   year={2012},
   publisher={Springer}
 }
+
+@misc{crdt-website,
+  title={{Conflict-Free Replicated Data Types}},
+  author={Kleppmann, Martin and  Bieniusa, Annette and Shapiro, Marc},
+  note={Retrieved 2023-05-05 from \url{https://crdt.tech/}}
+}
+
+@misc{hypercore-website,
+  title={{Hypercore Protocol}},
+  note={Retrieved 2023-05-05 from \url{https://hypercore-protocol.github.io/new-website/}}
+}
+
+@misc{hypercore-handling-conflicts,
+  title={{Issue \#174: Handling conflicts}},
+  author={EGreg and pfrazee and emilbayes and iamyellow and mafintosh},
+  note={Retrieved 2023-05-05 from \url{https://github.com/holepunchto/hypercore/issues/174}}
+}
+
+@misc{hypercore-split-resolution-dep,
+  title={{Pull-Request \#43: Hypercore Split Resolution DEP \#43}},
+  author={pfrazee and EGreg and yoshuawuyts},
+  note={Retrieved 2023-05-05 from \url{https://github.com/dat-ecosystem-archive/DEPs/pull/43}}
+}
+
+@misc{holepunch-website,
+  title={{Holepunch}},
+  year=2023,
+  note={Retrieved 2023-05-05 from \url{https://holepunch.to/}}
+}
+
+@book{cachin2011introduction,
+  title={Introduction to reliable and secure distributed programming},
+  author={Cachin, Christian and Guerraoui, Rachid and Rodrigues, Lu{\'\i}s},
+  year={2011},
+  publisher={Springer Science \& Business Media},
+  doi={doi:10.1007/978-3-642-15260-3},
+  url={http://distributedprogramming.net}
+}
+
+@article{viotti2016consistency-db-survey,
+author = {Viotti, Paolo and Vukoli\'{c}, Marko},
+title = {{Consistency in Non-Transactional Distributed Storage Systems}},
+year = {2016},
+issue_date = {March 2017},
+publisher = {ACM},
+address = {New York, NY, USA},
+volume = {49},
+number = {1},
+issn = {0360-0300},
+url = {https://doi.org/10.1145/2926965},
+doi = {10.1145/2926965},
+journal = {ACM Comput. Surv.},
+month = {jun},
+articleno = {19},
+numpages = {34},
+keywords = {Consistency, distributed storage}
+}
+
+@inproceedings{baudet2020fastpay,
+author = {Baudet, Mathieu and Danezis, George and Sonnino, Alberto},
+title = {FastPay: High-Performance Byzantine Fault Tolerant Settlement},
+year = {2020},
+isbn = {9781450381390},
+publisher = {ACM},
+address = {New York, NY, USA},
+url = {https://doi.org/10.1145/3419614.3423249},
+doi = {10.1145/3419614.3423249},
+booktitle = {Proceedings of the 2nd ACM Conference on Advances in Financial Technologies},
+pages = {163–177},
+numpages = {15},
+keywords = {bft, distributed system, consistent broadcast, settlement system},
+location = {New York, NY, USA},
+series = {AFT '20}
+}
+
+@misc{auvolat2021money,
+      title={{Money Transfer Made Simple: a Specification, a Generic Algorithm, and its Proof}}, 
+      author={Alex Auvolat and Davide Frey and Michel Raynal and François Taïani},
+      year={2021},
+      eprint={2006.12276},
+      archivePrefix={arXiv},
+      primaryClass={cs.DC}
+}
+
+@misc{sliwinski2020abc,
+      title={ABC: Proof-of-Stake without Consensus}, 
+      author={Jakub Sliwinski and Roger Wattenhofer},
+      year={2020},
+      eprint={1909.10926},
+      archivePrefix={arXiv},
+      primaryClass={cs.CR}
+}
+
+@misc{bezerra2022tame,
+      title={How to Tame Multiple Spending in Decentralized Cryptocurrencies}, 
+      author={João Paulo Bezerra and Petr Kuznetsov},
+      year={2022},
+      eprint={2205.14076},
+      archivePrefix={arXiv},
+      primaryClass={cs.DC}
+}
+
+@misc{shapiro2023sovereign,
+      title={Sovereign Cryptocurrencies: A Foundation for a Grassroots Digital Economy}, 
+      author={Ehud Shapiro},
+      year={2023},
+      eprint={2202.05619},
+      archivePrefix={arXiv},
+      primaryClass={cs.MA}
+}
+
+@inproceedings{frey:hal-03346756,
+  TITLE = {{Consensus-Free Ledgers When Operations of Distinct Processes are Commutative}},
+  AUTHOR = {Frey, Davide and Guillou, Lucie and Raynal, Michel and Ta{\"i}ani, Fran{\c c}ois},
+  URL = {https://inria.hal.science/hal-03346756},
+  BOOKTITLE = {{PaCT 2021 - 16th International Conference on Parallel Computing Technologies}},
+  ADDRESS = {Kaliningrad, Russia},
+  PUBLISHER = {{Springer}},
+  SERIES = {LNCS},
+  VOLUME = {12942},
+  PAGES = {359-370},
+  YEAR = {2021},
+  MONTH = Sep,
+  DOI = {10.1007/978-3-030-86359-3\_27},
+  KEYWORDS = {Asynchronous system ; Blockchain ; Commutative operations ; Consensusfreedom ; FIFO-based synchronization ; Immutable memory ; Mazurkiewicz's traces ; Message-passing ; Process crash failures ; Reliable broadcast},
+  PDF = {https://inria.hal.science/hal-03346756/file/Consensus-free-ledger-commute-operations-V11.pdf},
+  HAL_ID = {hal-03346756},
+  HAL_VERSION = {v1},
+}
+
+@misc{kuznetsov2021permissionless,
+      title={Permissionless and Asynchronous Asset Transfer [Technical Report]}, 
+      author={Petr Kuznetsov and Yvonne-Anne Pignolet and Pavel Ponomarev and Andrei Tonkikh},
+      year={2021},
+      eprint={2105.04966},
+      archivePrefix={arXiv},
+      primaryClass={cs.DC}
+}
+
+@misc{cryptoeprint:2021/1182,
+      author = {Nicholas Stifter and Aljosha Judmayer and Philipp Schindler and Edgar Weippl},
+      title = {Opportunistic Algorithmic Double-Spending: How I learned to stop worrying and hedge the Fork},
+      howpublished = {Cryptology ePrint Archive, Paper 2021/1182},
+      year = {2021},
+      note = {\url{https://eprint.iacr.org/2021/1182}},
+      url = {https://eprint.iacr.org/2021/1182}
+}
+
+@misc{georghiades2021needs,
+      title={Who Needs Consensus? A Distributed Monetary System Between Rational Agents via Hearsay}, 
+      author={Yanni Georghiades and Robert Streit and Vijay Garg},
+      year={2021},
+      eprint={2104.07574},
+      archivePrefix={arXiv},
+      primaryClass={cs.DC}
+}
+
+@article{pedone2002genericbroadcast,
+author = {Pedone, F. and Schiper, A.},
+title = {Handling Message Semantics with Generic Broadcast Protocols},
+year = {2002},
+issue_date = {April 2002},
+publisher = {Springer-Verlag},
+address = {Berlin, Heidelberg},
+volume = {15},
+number = {2},
+issn = {0178-2770},
+url = {https://doi.org/10.1007/s004460100061},
+doi = {10.1007/s004460100061},
+journal = {Distrib. Comput.},
+month = {apr},
+pages = {97–107},
+numpages = {11},
+keywords = {group communication, asynchronous systems, fault-tolerance, semantics-aware primitives, atomic broadcast, reliable broadcast}
+}
+
+@inproceedings{vanRenesse2008reconciliation,
+author = {van Renesse, Robbert and Dumitriu, Dan and Gough, Valient and Thomas, Chris},
+title = {Efficient Reconciliation and Flow Control for Anti-Entropy Protocols},
+year = {2008},
+isbn = {9781605582962},
+publisher = {Association for Computing Machinery},
+address = {New York, NY, USA},
+url = {https://doi.org/10.1145/1529974.1529983},
+doi = {10.1145/1529974.1529983},
+abstract = {The paper shows that anti-entropy protocols can process only a limited rate of updates, and proposes and evaluates a new state reconciliation mechanism as well as a flow control scheme for anti-entropy protocols.},
+booktitle = {Proceedings of the 2nd Workshop on Large-Scale Distributed Systems and Middleware},
+articleno = {6},
+numpages = {7},
+keywords = {epidemics, gossip, anti-entropy, flow control},
+location = {Yorktown Heights, New York, USA},
+series = {LADIS '08}
+}
+
+@INPROCEEDINGS{weichao2018blockchain,
+  author={Gao, Weichao and Hatcher, William G. and Yu, Wei},
+  booktitle={2018 27th International Conference on Computer Communication and Networks (ICCCN)}, 
+  title={A Survey of Blockchain: Techniques, Applications, and Challenges}, 
+  year={2018},
+  volume={},
+  number={},
+  pages={1-11},
+  doi={10.1109/ICCCN.2018.8487348}}
+
+@InProceedings{cholvi2021bdso,
+  author =	{Cholvi, Vicent and Fern\'{a}ndez Anta, Antonio and Georgiou, Chryssis and Nicolaou, Nicolas and Raynal, Michel and Russo, Antonio},
+  title =	{{Byzantine-Tolerant Distributed Grow-Only Sets: Specification and Applications}},
+  booktitle =	{4th International Symposium on Foundations and Applications of Blockchain 2021},
+  series =	{FAB 2021},
+  pages =	{2:1--2:19},
+  ISBN =	{978-3-95977-196-2},
+  ISSN =	{2190-6807},
+  year =	{2021},
+  volume =	{92},
+  publisher =	{Schloss Dagstuhl -- Leibniz-Zentrum f{\"u}r Informatik},
+  doi =		{10.4230/OASIcs.FAB.2021.2},
+  eprint={2103.08936},
+  keywords =	{sets, distributed ledgers, blockchains, atomic appends, theory, byzantine}
+}
+
+@mastersthesis{gupta2016nonconsensusdft,
+  author = {Gupta, Saurabh},
+  title = {A Non-Consensus Based Decentralized Financial Transaction Processing Model with Support for Efficient Auditing},
+  year = {2016},
+  month = jun,
+  school = {Arizona State University},
+  type = {Master Thesis},
+  url={https://www.proquest.com/openview/a7fabdb0ac1f37ee5824aa89f30b904e}
+}
+
