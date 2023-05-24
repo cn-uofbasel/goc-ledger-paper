@@ -19,13 +19,18 @@
 %\newtheorem{theorem}{Theorem}
 %\newtheorem{lemma}{Lemma}
 
+\newcommand\el[1]{\textcolor{orange}{{\bf Erick: }#1}}
+
 \newcommand{\defeq}{\overset{\mathrm{def}}{=}}
 \newcommand{\mergeop}{\overset{\sqcup}\rightarrow}
 \newcommand{\localop}{\overset{\textbf{local}}\rightarrow}
 \newcommand{\anyop}[1]{\overset{#1}\rightarrow}
 
-\title{State-based Conflict-Free Replicated Ledger}
-\author{Erick Lavoie}
+\title{GOC-Ledger: State-based Conflict-Free Replicated Ledger based on Grow-Only Counters}
+\author{Erick Lavoie \\
+University of Basel \\
+\href{mailto:erick.lavoie@unibas.ch}{erick.lavoie@unibas.ch}}
+
 %\date{March, 13, 2023}							% Activate to display a given date or no 
 
 \begin{document}
@@ -33,40 +38,57 @@
 
 
 \begin{abstract}
-The electronic asset transfer problem, which is solved by many replicated ledgers, has been shown to not require consensus. To our knowledge, all newer designs that leverage this property are based on a causality-based operation view that makes reasoning about and efficiently implementing replicated ledgers harder than necessary.
+Conventional blockchains use consensus algorithms that totally order updates across all accounts, which is stronger than necessary to implement a replicated ledger. This makes updates slower and more expensive than necessary. More recent consensus-free replicated ledgers forego consensus algorithms, with significant increase in performance and decrease in infrastructure costs. However, current designs are based around reliable broadcast of update operations to all replicas, which makes reasoning about replicated ledgers harder than necessary.
 
-We reformulate the design of a replicated ledger as a state-based conflict-free replicated data type (CRDT) based on grow-only counters. This lowers requirements on message delivery to eventual delivery of the latest state transitively. Moreover, the system can be analyzed by reasoning only about the states and differences between states of the accounts, which significantly simplifies the presentation of key algorithms. This better highlights that the key property enabling eventually-consistent ledgers is that the positive contribution of a sender account to a receiver account's balance only needs to be accounted for \textit{eventually}, allowing senders to decrease their balance independently of receivers. Moreover, as a departure from previous designs, we also show that a conflict-free replicated ledger converges even in the presence of \textit{overspending}, albeit to a negative account balance. This is useful for designing eventually-consistent distributed systems in which a \textit{temporary negative balance} is not critical, because, \textit{e.g.}, users have to restore a non-negative balance to maintain access. Finally, in our state-based approach, \textit{overspending requires concurrent transfers from different replicas to different receivers}: strictly sequential operations on the same account cannot lead to overspending and concurrent transfers from the same account to the same receiver will result in the amount transferred to be smaller or equal than the available balance.
+In this paper, we present a replicated ledger as a state-based conflict-free replicated data type (CRDT) based on grow-only counters. This design provides multiple benefits: 1) it requires a weaker eventual transitive delivery of the latest state rather than reliable broadcast of all update operations to all replicas; 2) eventual convergence, even to negative balances, can be proven easily from the composition of grow-only counters without having to  reason over operation histories; 3) applications that tolerate temporary negative balances require no additional mechanisms; 4) applications that require strictly non-negative balances can be supported by enforcing sequential updates to the same account across replicas.
 
-In this paper, we therefore present a state-based conflict-free replicated ledger and prove its convergence, the conditions under which overspending arises, as well as global safety and liveness conditions of the resulting account balances. We show that our design provides these properties in crash-stop, crash-recovery, and fail-silent system models, which is appropriate to any deployment in which all replicas are managed by trusted entities. We discuss different design dimensions to inform designers of possible choices depending on application requirements. We also outline remaining challenges to obtain similar properties in open systems in which replicas might arbitrarily deviate from our algorithms.
+Our design is sufficient when executing on replicas that might crash and recover, as common in deployments in which all replicas are managed by trusted entities. It may also provide a good foundation to explore new mechanisms for tolerating adversarial replicas.
 \end{abstract}
 
 \section{Introduction}
 \label{sec:introduction}
 
-Contributions:
-\begin{itemize}
-	\item We present the design of a distributed ledger as a state-based conflict-free replicated data type and prove its convergence, as well as its balance safety and liveness properties;
-	\item We highlight the design possibilities around token creation, enforcing strictly positive account balances, and management of replicas to guide system designers;
-	\item We highlight future research directions that are opened by our approach, especially in implementing eventually consistent ledgers in adversarial open settings.
-\end{itemize}
+% Consensus is not necessary
+Global replicated ledgers, also known as \textit{blockchains}, provide the ability for untrusted parties to exchange tokens world-wide, with Bitcoin~\cite{nakamoto2008bitcoin} and Ethereum~\cite{buterin2014next} being the most popular examples. It has been shown that using consensus algorithms to totally order updates across all accounts in replicated ledgers is stronger than necessary to prevent overspending~\cite{guerraoui2021consensus}: sequentially ordering updates on the same account (\textit{e.g.},~\cite{frey:hal-03346756}) and even only the outgoing transactions is sufficient  (\textit{e.g.},~\cite{collins2020broadcast-payment}). Foregoing the use of consensus algorithms drastically increases throughput and decreases latency~\cite{collins2020broadcast-payment,baudet2020fastpay}. Published consensus-free replicated ledgers~\cite{collins2020broadcast-payment,baudet2020fastpay,sliwinski2020abc,guerraoui2021consensus,auvolat2021money,frey:hal-03346756,kuznetsov2021permissionless,cholvi2021bdso,georghiades2021needs} are based on broadcast abstractions that require reliable delivery of account operations. 
 
-\section{State-based Eventually-Consistent Ledger}
+% Opportunity of state-based CRDTs
+In parallel to work on replicated ledgers, Conflict-Free Replicated Data Types (CRDTs)~\cite{shapiro:hal-00932836} have been proposed to simplify the design and implementation of distributed systems. CRDTs are replicated mutable objects designed according to simple constraints to ensure convergence to the same state \textit{eventually}, \textit{i.e.}, at some point in the future after updates have stopped, and \textit{automatically}, \textit{i.e.} using deterministic conflict-resolution rules in the presence of concurrent updates. The state-based declination of CRDTs~\cite{shapiro:hal-00932836} requires only 1) eventual transitive delivery of the latest state rather than reliable broadcast of all update operations to all replicas, and 2) a simple merging procedure between different states. The state-based approach tolerates by design lost, re-ordered, stale, and duplicate updates containing copies of other replicas' state.
 
-In this section, we present the design of eventually-consistent ledgers in two parts: we present eventually-consistent \textit{accounts} (Section~\ref{sec:account}) and then the eventually-consistent \textit{ledgers} proper (Section~\ref{sec:ledger}). We present the state and operations on both accounts and ledgers at a high-level to outline a \textit{family} of designs that are eventually-consistent: this will pave the way for a discussion of design dimensions (Section~\ref{sec:design-issues}) that can turn this high-level design into concrete implementations. Our notation and conventions are explained as they are introduced and collected in Appendix~\ref{apdx:notation}.
+In this paper, \textit{we show that a replicated ledger can be implemented as a state-based conflict-free data type based on the composition of grow-only counters}, which we call \textit{Grow-Only-Counters-Ledger} (GOC-Ledger). The key idea is to use a separate grow-only counter for every kind of state-updating operation, which represents the total contribution of all past similar operations to the current balance. For example, a specific grow-only counter is used to track the total amount ever sent  from a sender account to a specific receiver account. The current balance of an account is then computed by adding every balance-increasing counters and subtracting every balance-reducing counters. 
+
+To the best of our knowledge, we are the first to propose this design, which provides numerous benefits. First, as for all state-based CRDTs, it lowers the requirements on the communication channels and connection topology between replicas. Effectively, grow-only counters act as a summary of all previous operations of the same kind, which removes the need to reason about and individually track previous operations. Second, eventual convergence of all account replicas to the same balance can be simply proven by the composition of grow-only counters, that are themselves simple state-based CRDTs. The convergence of account replica balances is guaranteed even in the presence of overspending, which we show can only occur in the presence of concurrent updates to the same account from multiple replicas.
+
+% Local crypto-tokens opportunity
+%The use of crypto-tokens has been popularized by global replicated ledgers, also known as \textit{blockchains}, for anonymous transactions between untrusted parties world-wide, with Bitcoin~\cite{nakamoto2008bitcoin} and Ethereum~\cite{buterin2014next} being the most popular.
+%However, high transactions fees preclude their use for many local economic applications~\cite{lavoie2022localcryptotokens}.
+%Local economies are characterized by repeated interactions within a community of participants that know each other, providing higher trust levels than is otherwise assumed by participants on global blockchains. Revisit underlying economic assumptions behind the current designs to enable simpler and more affordable infrastructure in local contexts.
+
+As additional benefits, a GOC-Ledger might be particularly appropriate for supporting local economic applications~\cite{lavoie2022localcryptotokens}, that are characterized by repeated interactions within a community of participants that know each other. Some local applications may tolerate temporary negative balances, for example because existing trust between participants or reputation loss are sufficient to incentivize maintaining a non-negative balance. For other applications in which a non-negative balance should be maintained at all times, our design can be combined with an additional mechanism that ensures all updates to the same account are ordered, similar to existing designs~\cite{collins2020broadcast-payment,baudet2020fastpay}. Either case should be relatively straight-forward to implement when all replicas are managed by a single organization or a restricted set of mutually-trusting entities.
+
+However, our design is not sufficient by itself to operate in the presence of adversarial replicas, as happens in peer-to-peer settings. It is still an open research question to design practical and frugal replicated ledgers that work in those settings. We believe GOC-Ledger is a good foundation for such explorations, and plan to use it to design the necessary mechanisms. 
+
+In the rest of this paper,  we present the design of the GOC-Ledger (Section~\ref{sec:design}), we prove its convergence, as well as its balance safety and liveness properties (Section~\ref{sec:proofs}), we position it in the context of other related work  and highlight open challenges to tolerate adversarial failures (Section~\ref{sec:related-work}). We finally conclude with a brief summary and outline future research directions (Section~\ref{sec:conclusion}).
+
+\newpage
+
+\section{Grow-Only-Counters (GOC) Ledger}
+\label{sec:design}
+
+In this section, we present the design of a GOC-Ledger in two parts: we first present state-based conflict-free replicated \textit{accounts} (Section~\ref{sec:account}) and then the \textit{ledger} proper (Section~\ref{sec:ledger}). Our notation and conventions are explained as they are introduced and collected in Appendix~\ref{apdx:notation}.
 
 \subsection{Account}
 \label{sec:account}
 
-Account replicas track the current balance of tokens for a given owner identified by their \textit{identifier}, shorten as $id$. The state of an account is decomposed into multiple internal counters such that all counters are \textit{monotonically increasing}, \textit{i.e.}, every operation leaves counters either unchanged or larger. 
+Account replicas track the current balance of tokens for a given owner identified by their \textit{identifier} ($id$). The state of an account is decomposed into multiple internal counters such that all counters are \textit{monotonically increasing}, \textit{i.e.}, every operation leaves counters either unchanged or larger. 
 
-Before explaining what each internal counter represents, we give an overview of account operations. Each owner can  \textit{create} new tokens, if they have the capability; \textit{burn} tokens they own; and transfer some or all their tokens to other accounts, identified by different $id$s. This is similar to existing crypto-token designs, such as (CITE). In contrast to the previous examples, we split the transfer into two operations: the sender \textit{gives} tokens to a receiver account, which immediately decreases the balance of the sender; however, the balance of the receiver is only increased after an explicit \textit{acknowledgement}. This decomposition enables the reception of tokens to be tracked as a separate event: this allows, for example, other replicas to check if the receiver account has received (and accepted) the tokens.\footnote{It is possible to always automatically acknowledge the reception of tokens immediately upon reception and not expose the acknowledgment operation to the user. However, having the operation performed explicitly also gives the opportunity to the receiver to ignore tokens sent to them. We therefore prefer the explicit operation.} The implementation of operations follows from both principles, with each operation modifying separate internal counter(s). 
+Before explaining what each internal counter represents, we give an overview of account operations. Each owner can  \textit{create} new tokens, if they have the capability; \textit{burn} tokens they own; and transfer some or all their tokens to other accounts, identified by different $id$s. We split the transfer into two operations: the sender \textit{gives} tokens to a receiver account, which immediately decreases the balance of the sender; however, the balance of the receiver is only increased after an explicit \textit{acknowledgement}. This decomposition enables the reception of tokens to be tracked as a separate event: this allows, for example, other replicas to check if the receiver account has received (and accepted) the tokens.\footnote{It is possible to always automatically acknowledge the reception of tokens immediately upon reception and not expose the acknowledgment operation to the user. However, having the operation performed explicitly also gives the opportunity to the receiver to ignore tokens sent to them. We therefore prefer the explicit operation.} The implementation follows easily, with each operation modifying separate internal counter(s). 
 
 We first present the state and operations in the following section (Section~\ref{sec:account:state-operations}), and the ordering and merging operations necessary for concurrency, in the next (Section~\ref{sec:account:ordering-merging}).
 
 \subsubsection{State and Operations}
 \label{sec:account:state-operations}
 
-The implementation of the state and corresponding operations is listed in Algorithm~\ref{alg:account}. 
+The implementation of the state and corresponding operations is listed in Algorithm~\ref{alg:account} and ~\ref{alg:query}. We now present each operation in turn.
 
 \begin{algorithm}
 \begin{algorithmic}[1]
@@ -118,7 +140,7 @@ The implementation of the state and corresponding operations is listed in Algori
     \EndFunction
     \State
     \Function{ackFrom}{$A, B$}
-        \If{$\texttt{unackedFrom}(A,B) > 0 \wedge \texttt{balance}(B) \geq 0$}
+        \If{$\texttt{unackedFrom}(A,B) > 0$}
                 \State $A' \leftarrow \textit{copy}(A)$
 		\If{$B_{\scriptsize\textbf{id}} \notin A_{\leftarrow *}$}
 			 \State $A'_{\leftarrow}[B_{\scriptsize\textbf{id}}] \leftarrow B_{\rightarrow}[A_{\scriptsize\textbf{id}}]$
@@ -156,27 +178,32 @@ The implementation of the state and corresponding operations is listed in Algori
 	\EndIf
     \EndFunction
     \end{algorithmic}
-\caption{\label{alg:account} Account: Query Operations}
+\caption{\label{alg:query} Account: Query Operations}
 \end{algorithm}
 
-A replica of an account belonging to owner $id$ is created with \texttt{initialize}. This initializes the internal identifier $A_{\textbf{id}}$ to $id$, the number of created tokens $A_\uparrow$ to $0$, the number of burned tokens $A_\downarrow$ to $0$, the dictionary of given tokens $A_\rightarrow$ to an empty dictionary, and the dictionary of acknowledged tokens $A_\leftarrow$ to an empty dictionary as well.\footnote{The left or right direction of the arrow notation suggests the corresponding direction of funds, respectively into or out from an account.}
+A replica of an account belonging to owner $id$ is created with \texttt{initialize} (Alg.~\ref{alg:account}). This initializes the internal identifier $A_{\textbf{id}}$ to $id$, the number of created tokens $A_\uparrow$ to $0$, the number of burned tokens $A_\downarrow$ to $0$, the dictionary of given tokens $A_\rightarrow$ to an empty dictionary, and the dictionary of acknowledged tokens $A_\leftarrow$ to an empty dictionary as well.\footnote{The direction of the arrow notation suggests the corresponding direction of funds: up or down for creation or destruction of tokens, and  left or right for tokens flowing into and out of an account.}
 
-The \texttt{create} operation takes the current state of an account $A$ and a requested \textit{amount} then returns a new state $A'$.\footnote{A practical implementation may actually encapsulate the state of an account in an object and modify it in place. We explicitly associate the different states to different variables to make the labels of the states in proofs (Section~\ref{sec:proofs}) easier to relate to the implementation.} Only allowed creators, \textit{i.e.}, those with ids within the set of allowed identifiers $\mathds{C}$, may create new tokens. The set of allowed creator identifiers might be distributed to replicas beforehand or enforced through cryptographic mechanisms. If the owner of the account has the necessary permission, the creation counter $A'_\uparrow$ is increased by \textit{amount}. This has the effect of increasing the balance of $A$ by \textit{amount}. Otherwise, the counter is unchanged ($A'_\uparrow=A_\uparrow$) and the balance remains the same.
+The \texttt{create} operation (Alg.~\ref{alg:account}) takes the current state of an account $A$ and a requested \textit{amount} then returns a new state $A'$.\footnote{A practical implementation may actually encapsulate the state of an account in an object and modify it in place. We explicitly associate the different states to different variables to make the labels of the states in proofs (Section~\ref{sec:proofs}) easier to relate to the implementation.} Only allowed creators, \textit{i.e.}, those with ids within the set of allowed identifiers $\mathds{C}$, may create new tokens.\footnote{The set of allowed creator identifiers might be distributed to replicas beforehand or derived from cryptographic mechanisms. The design of such mechanisms is outside the scope of this paper.} If the owner of the account is indeed allowed to create tokens, the creation counter $A'_\uparrow$ is increased by \textit{amount}. This has the effect of increasing the balance of $A$ by \textit{amount}. Otherwise, the counter is unchanged ($A'_\uparrow=A_\uparrow$) and the balance remains the same.
 
-The \texttt{burn} operation is similar to \texttt{create} with an opposite effect on the balance: it takes the current state of an account $A$ and a requested \textit{amount} to burn, then returns a new state $A'$. If the balance is equal or larger than \textit{amount}, the burn counter $A'_\downarrow$ is increased by \textit{amount}, and the balance correspondingly decreased by the same amount. Otherwise, $A'_\downarrow = A_\downarrow$. In contrast, to \texttt{create} any account is allowed to burn tokens. Restricting burning tokens to a set of identifiers would also be possible. However, the restriction would not be effective unless transfer operations were also restricted to only valid addresses,\footnote{Giving to an invalid or unused address effectively makes the tokens unavailable, similar to burning.} which in turn would require tracking the set of valid accounts. We therefore take the simpler and more open approach of allowing any account to burn tokens. 
+The \texttt{burn} operation (Alg.~\ref{alg:account}) is similar to \texttt{create} with an opposite effect on the balance: it takes the current state of an account $A$ and a requested \textit{amount} to burn, then returns a new state $A'$. If the balance is equal or larger than \textit{amount}, the burn counter $A'_\downarrow$ is increased by \textit{amount}, and the balance correspondingly decreased by the same amount resulting in a non-negative balance. Otherwise, $A'_\downarrow = A_\downarrow$ and the balance is unchanged. In contrast to \texttt{create}, any account is allowed to burn tokens. Restricting burning tokens to a set of identifiers would also be possible. However, the restriction would not be effective unless transfer operations were also restricted to only valid addresses,\footnote{Giving to an invalid or unused address effectively makes the tokens unavailable, similar to burning.} which in turn would require tracking the set of valid accounts. We therefore take the simpler and more open approach of allowing any account to burn tokens. 
 
-The \texttt{giveTo} operation sends \textit{amount} tokens from account $A$ to the recipient account associated to $id$, resulting in a new state $A'$. The account state tracks the total amount ever sent to $id$ using the dictionary $A_{\rightarrow}$, using $id$ as a key to access the associated monotonic counter, written $A_{\rightarrow}[id]$. This counter is only increased if the local balance is higher or equal than the \textit{amount} sent.
+The \texttt{giveTo} operation (Alg.~\ref{alg:account}) sends \textit{amount} tokens from account $A$ to the recipient account associated to $id$, resulting in a new state $A'$. The account state tracks the total amount ever sent to $id$ using the dictionary $A_{\rightarrow}$, using $id$ as a key to access the associated monotonic counter, written $A_{\rightarrow}[id]$. This counter is only increased if the local balance is higher or equal than the \textit{amount} sent, resulting in a non-negative balance for $A'$.
 
-The \texttt{ackFrom} operation acknowledges the reception of tokens from account $B$ by account $A$, resulting in new state $A'$. The implementation simply takes the maximum value of the tokens sent $B_{\rightarrow A_{\tiny \textbf{id}}}$ and the previously acknowledged tokens $A_{\leftarrow B_{\tiny \textbf{id}}}$. At all times the former is equal or larger than the latter.
+\texttt{Burn} and \texttt{giveTo} are the only two operations on accounts that may decrease the balance. As we prove later by simple induction (Section~\ref{section:proof:sequential-non-negative}), it is sufficient to sequentially order all account operations, potentially across replicas, to guarantee that the balance for that account will always be non-negative. A contrario, as we also discuss next  (Section~\ref{sec:account:ordering-merging}), concurrent updates to the same account in different replicas may eventually result in a negative balance, even if the balance resulting from individual operations was always non-negative.
 
-The \texttt{balance} of an account $A$ performs additions and subtractions on counters corresponding to individual operations to compute the total balance of an account. It does not modify the state of the account. The implementation first computes the \textit{debits}, \textit{i.e.}, the sum of the amounts that increase the balance: that corresponds to the number of created tokens and the sum of the tokens acknowledged from all other accounts. Second, it computes the \textit{credits}, \textit{i.e.}, the sum of the amounts that decrease the balance: that corresponds to the number of tokens burnt and the sum of tokens given to all other accounts. The total is the difference between the \textit{debits} and the \textit{credits}.
+The \texttt{ackFrom} operation (Alg.~\ref{alg:account}) acknowledges the reception of tokens from account $B$ by account $A$. If there are unacknowledged tokens that $B$ sent to $A$,
+then $A$'s counter $A_{\leftarrow}[B_{\scriptsize \textbf{id}}]$, which tracks the total amount ever acknowledged by $A$ from $B$, is increased by the number of unacknowledged tokens, with a corresponding increase the balance of $A'$. If $A$ had never acknowledged tokens from $B$ before, the new counter value  $A'_{\leftarrow}[B_{\scriptsize \textbf{id}}]$ is simply the total amount ever sent by $B$ to $A$ up to that point, written $B_{\rightarrow}[A_{\scriptsize \textbf{id}}]$. Otherwise, if $A$ had already acknowledged tokens from $B$, the new counter value  $A'_{\leftarrow}[B_{\scriptsize \textbf{id}}]$ is the maximum of the previous value $A_{\leftarrow}[B_{\scriptsize \textbf{id}}]$ and $B_{\rightarrow}[A_{\scriptsize \textbf{id}}]$. This definition correctly handles acknowledging with a stale state  $B^{-1}$ because the corresponding counter $B^{-1}_{\rightarrow}[A_{\scriptsize \textbf{id}}]$ would be equal or smaller than the counter in the most recent state of $B$, $B_{\rightarrow}[A_{\scriptsize \textbf{id}}]$, and therefore $A$ would not be updated. It could also be useful to check that the balance of $B$ was non-negative prior to updating the state of $A$: this would limit the propagation of overspent tokens by $B$\footnote{ This would not completely prevent the propagation because different accounts may have individually acknowledged tokens from B before B's state would reflect the overspending.}. Checking for a non-negative balance from $B$ is however superfluous if the application is actually intended to handle negative balances (Section~\ref{sec:economics}).
 
-The last operation, \texttt{unackedFrom} computes the sum of tokens sent from account $B$ that have not yet been acknowledged by account $A$. It does not modifies the state of $A$ nor $B$. This is implemented by subtracting the tokens acknowledged by $A$ from $B$, from the tokens sent by $B$ to $A$. If the result is greater than zero, there are unacknowledged tokens.
+As follows from the previous explanations, the \texttt{balance} of an account $A$ (Alg.~\ref{alg:query}) is the sum of counters that increase the balance (\textit{debits}) subtracted by the sum of counters that decrease it (\textit{credits}). The \texttt{balance} operation does not modify the state of the account. The debits are the sum of created tokens and the sum of the tokens acknowledged from other accounts. The credits are the sum of tokens burnt and given to other accounts.
 
-\subsubsection{Ordering and Merging}
+The last operation, \texttt{unackedFrom} (Alg.~\ref{alg:query})  returns the number of tokens sent from account $B$ that have not yet been acknowledged by account $A$. It does not modify the state of $A$ nor $B$. This is implemented by subtracting the tokens acknowledged by $A$ from $B$, from the tokens sent by $B$ to $A$. If the result is greater than zero, there are unacknowledged tokens.
+
+\subsubsection{Monotonic Lattice: Relation and Operations for State-Based Concurrency}
 \label{sec:account:ordering-merging}
 
-The next two operations, shown in Algorithm~\ref{alg:account-ordering}, respectively establish a partial order between the different states of replicas, and enable merging different states, possibly modified concurrently, to obtain a new state.
+We now augment our previous account definition with one relation and two operations to enable comparing states, merging concurrently modified states, and reason about the conditions under which the balance of accounts may become negative. The augmented definition forms a \textit{monotonic lattice}, which informally, is a mathematical structure that combines an ordering between states with constraints on operations that captures the notion of progress without having to explicitly reason about time and ordering between different operations. We now present its different components.
+
+The relation $\leq_\mathds{A}$ (Alg.~\ref{alg:account-ordering}) establishes an ordering between states of the same account, \textit{i.e.}, account states with the same id. The operations of the previous section (Alg.~\ref{alg:account} and ~\ref{alg:query}) have been carefully designed to be \textit{monotonic}, \textit{i.e.} they either do not modify the state of an account, or result in a new state $A'$ larger than the previous state $A$ according to $\leq_\mathds{A}$. Because of the monotonicity of the operations, if $A <_\mathds{A} A'$\footnote{$A \leq_\mathds{A} A'$ and $A \neq A'$}, then $A$ has happened before $A'$ and therefore $A'$ also contains all the updates that led to $A$. This ordering is however \textit{partial}: \textit{i.e.} if neither $A <_\mathds{A} A'$ nor $A' <_\mathds{A} A$, then neither $A$ or $A'$ has happened before the other and both are therefore the result of concurrent updates. The relation $A \leq_\mathds{A} A'$ is implemented as follows: it is true if and only if the set of identifiers for given and acknowledged tokens of $A$ are subsets of those $A'$ \textit{and} every counter of $A$ are smaller or equal to the corresponding counters in $A'$. Note that counters in $A'$ not present in $A$ have no effect, because they would be the result of operations that have happened after $A$. 
 
 \begin{algorithm}
 \begin{algorithmic}[1]
@@ -225,11 +252,13 @@ The next two operations, shown in Algorithm~\ref{alg:account-ordering}, respecti
 \caption{\label{alg:account-ordering} Account: Ordering and Merging}
 \end{algorithm}
 
-The compare operation for account states $A$ and $A'$, written $A \leq_A  A'$, returns true if the state of account $A$ is smaller or equal than that of account $A'$. This is the case if and only if the set of identifiers for given and acknowledged tokens of $A$ are subsets of those $A'$ \textit{and} every counter of $A$ are smaller or equal to the corresponding counters in $A'$. Note that counters in $A'$ not present in $A$ have no effect. This enables comparing the state of two accounts to see if $A'$ is more up-to-date than $A$, in which case $A \leq_A  A'$, or if $A$ and $A'$ are the result of concurrent modifications, in which case both $A \nleq_A A'$ and $A' \nleq_A A$ (are false).
+The account merge operation, $\sqcup_\mathds{A}$, (Alg.~\ref{alg:account-ordering}) is also a monotonic operation that combines different states for the same account, possibly resulting from concurrent operations. It computes the smallest state $A''$ from any two states $A$ and $A'$, such that $A''$ is equivalent to having applied the operations that led to both $A$ and $A'$. In mathematical terms, $A''$ is the \textit{least upper bound} of both $A$ and $A'$ according to $\leq_\mathds{A}$. Because it is a least upper bound, merging two states $A$ and $A'$ such that $A$ has happened before $A'$, \textit{i.e.} $A \leq_\mathds{A} A'$, results in a new state $A'' = A'$. This property allows merging with duplicate and out-of-order previous states without impacting the result. Moreover, because a later merged state implicitly contains the updates that led to previous states across replicas, the convergence of all replicas to the same state only requires the latest state of all replicas to have been propagated to other replicas \textit{transitively}, \textit{i.e.} through intermediate replicas, instead of being explicitly broadcasted to all from the source replica as would be necessary for an operation-based replicated ledger~\cite{shapiro:hal-00932836}. The merge operation is implemented by merging all counters from both states and taking the maximum value of those that are present on both states.\footnote{This implementation is not strictly equivalent to merging all operations that have happened across replicas because taking the maximum value of two resulting counter is not equivalent to the sum of increments from their previous common state: \textit{i.e.} if $c' = x + c$ and $c'' = y + c$, $max(c', c'')$ is equal to $c + x + y$ only if $x$ or $y$ is $0$. In effect, the merge effectively considers two concurrent increments as having a shared component that is not duplicated even if done concurrently. This subtle distinction is what enables not having to reason about ordering between operation updates. Concurrent operations on different counters are however equivalent to merging all operations.}
 
-The merge operation between account states $A$ and $A'$, written $A'' = A \sqcup A'$, returns a new account state $A''$ that is the smallest state according to $\leq_A$ that is also larger than both $A$ and $A'$. It is implemented by 1) taking the union of all the keys (identifiers) on both $A_\rightarrow$ and $A'_\rightarrow$ into $A''_\rightarrow$, and similarly on $A_\leftarrow$ and $A'_\leftarrow$ into $A''_\leftarrow$; and 2) taking the maximum value of all internal counters if present on both $A$ and $A'$, otherwise either the value of $A$ or $A'$ whichever exists. This is useful, for example to update the state of a local replica so that it eventually incorporates all the changes that have happened on other remote replicas.
+The state and monotonic operations  of Section~\ref{sec:account:state-operations} augmented with the partial ordering induced by relation $\leq_\mathds{A}$ and the account merge operation $\sqcup_\mathds{A}$ is a Conflict-Free Replicated Data Type~\cite{shapiro:hal-00932836} (with proof in Section~\ref{sec:proof:account}) because all replicas are guaranteed to converge to the same state eventually. However, concurrent updates may result in a negative balance: \textit{e.g.}, two concurrent burn and give operations may have a sufficient balance to complete independently and concurrently but not any more after merging the resulting concurrent states.\footnote{As follows from the previous note, if there were no transfers, concurrent burns would never result in a negative balance because only the largest burnt amount, which was locally valid, would be retained instead of the sum of all burnt amounts.} That being said, \textit{only concurrent updates} may result in a negative balance: if all updates are sequential, the pre-condition on crediting operations (Alg.~\ref{alg:account}, line~\ref{ln:burn-balance-check} and \ref{ln:give-balance-check}) prevents the balance from going negative (see proof in Section~\ref{section:proof:sequential-non-negative}).
 
-The account we just presented is a Conflict-Free Replicated Data Type~\cite{shapiro:hal-00932836} (Section~\ref{sec:proofs}) because all replicas are guaranteed to converge to the same state eventually. However, concurrent updates may result in a negative balance: \textit{e.g.}, two concurrent burn and give operations may have a sufficient balance to complete concurrently but together would compound after merging the state of replicas  (Figure~\ref{fig:account-negative-bal}).\footnote{Perhaps surprisingly, if there were no transfers, concurrent burns would never result in a negative balance because only the largest burnt amount, which was locally valid, would be retained instead of the sum of all burnt amounts. See the merge operation in Alg.~\ref{alg:account-ordering}.}. That being said, \textit{only concurrent updates} may result in a negative balance: if all updates are sequential, the sufficient balance pre-condition on all operations that decrease the balance (Alg.~\ref{alg:account}, line~\ref{ln:burn-balance-check} and \ref{ln:give-balance-check}) otherwise prevents the balance from going negative. We discuss some of the design dimensions available for system designers in Section~\ref{sec:design-neg-balance-choice}, that make the problem less of an issue than it might appear at first.
+While not necessary to define a state-based CRDT, we define an additional operation $\sqcap_\mathds{A}$ (Alg.~\ref{alg:account-hlb}) that is the symmetrical opposite of the merge operation: \textit{i.e.}, the \textit{greatest lower bound} of two account states. This definition completes the semi-lattice formed by the $\leq_\mathds{A}$ relation and the $\sqcup_\mathds{A}$ operation into a complete lattice. Informally, $A'' = A \sqcap_\mathds{A} A'$ computes the resulting state $A''$ from the largest overlapping updates that led to both $A$ and $A'$. It is implemented by keeping the minimum value of counters that are present in both states.
+
+We use $\sqcap_\mathds{A}$ to establish the precise conditions under which merging two account states with non-negative balances may result in a new state with a negative balance. Formally, the balance of the merge result of $A$ and $A'$, \textit{i.e.}, \texttt{balance}($A \sqcup_\mathds{A} A'$), will be negative if and only if the sum of differences in credits between $A$ and $A'$ is larger than the sum of differences in debits between $A$ and $A'$, and \texttt{balance}($A \sqcap_\mathds{A} A'$) was sufficiently low (see proof in Section~\ref{sec:proofs:merge-concurrent-accounts}). Informally, there must have been more credits issued than debits received from the non-overlapping updates implicitly contained in $A$ and $A'$, as well as not enough reserves to cover the difference.
 
 \begin{algorithm}
 \begin{algorithmic}[1]
@@ -250,15 +279,11 @@ The account we just presented is a Conflict-Free Replicated Data Type~\cite{shap
 	\State \Return $A''$	
     \EndFunction
 \end{algorithmic}
-\caption{\label{alg:account-hlb} Account: Highest Lower Bound}
+\caption{\label{alg:account-hlb} Account: Greatest Lower Bound}
 \end{algorithm}
 
+This completes our presentation of a single account CRDT. The next section explains how to combine multiple accounts.
 
-\begin{figure}
-
-\caption{Concurrent updates may lead to a negative account balance.}
-\label{fig:account-negative-bal}
-\end{figure}
 
 
 \subsection{Ledger}
@@ -313,173 +338,58 @@ The \texttt{initialize} operation creates a new dictionary $L$ representing the 
 
 The \texttt{add} operation adds a new account replica in $L$, returning a new dictionary $L'$. If account $A$ is not already present in $L$, it creates a new entry with a key corresponding to $A$'s identifier and the state of $A$ as a value. Otherwise, it merges the state of account $A$ with the state of the stored replica in $L$ with the same identifier, updating the ledger in the process.
 
-The compare operation for ledger states $L$, and $L'$, written $L \leq_L L'$, returns true if the state of $L$ is smaller or equal than the state of $L'$. It does not modify the state of either $L$ or $L'$. The comparison is true if and only if, $L$ keys are a subset of keys in $L'$ and that every account associated to the keys ($id$s) in $L$ is smaller than the same account in $L'$, using the compare operation for accounts ($\leq_A$).
+The compare relation for ledger states $L$, and $L'$, written $L \leq_L L'$, returns true if the state of $L$ is smaller or equal than the state of $L'$. It does not modify the state of either $L$ or $L'$. The comparison is true if and only if $L$'s keys are a subset of keys in $L'$ and every account associated to the keys ($id$s) in $L$ is smaller than the same account in $L'$, using the compare relation for accounts ($\leq_A$).
 
-The merge operation between ledger states $L$ and $L'$, written $L'' = L \sqcup_L L'$, returns a new ledger state $L''$ that is the smallest state according to $\leq_L$ that is also larger than both $L$ and $L'$. It is implemented by taking 1) the union of all keys (identifiers) on both $L$ and $L'$ and 2) associating each keys to the most up-to-date corresponding account state. The second is implemented with the merge operation on accounts ($\sqcup_A$, Alg.~\ref{alg:account-ordering}) if the account is present in both states, otherwise it takes the state of the account either $L$ or $L'$, whichever is present.
+The merge operation between ledger states $L$ and $L'$, written $L'' = L \sqcup_L L'$, returns a new ledger state $L''$ that is the smallest state according to $\leq_L$ that is also larger than both $L$ and $L'$. It is implemented by taking 1) the union of all keys (identifiers) on both $L$ and $L'$ and 2) associating each keys to the most up-to-date corresponding account state. The second is implemented with the merge operation on accounts ($\sqcup_A$, Alg.~\ref{alg:account-ordering}) if the account is present in both states, otherwise it takes the state of the account either in $L$ or $L'$, whichever is present.
 
 
-This ledger design is also a Conflict-Free Replicated Data Type [1] (Section~\ref{sec:proofs}) because all replicas are guaranteed to converge to the same state eventually. To the exception of the possibility that accounts may have negative balance, there is no additional issue related to concurrency: any concurrent account updates will result in a valid ledger. Moreover, this is the case whichever design choices (Section~\ref{sec:design-issues}) are made regarding accounts.
+This ledger design is also a Conflict-Free Replicated Data Type (see proof in Section~\ref{sec:proof:ledger}) because all replicas are guaranteed to converge to the same state eventually. To the exception of the possibility that accounts may have negative balance, there is no additional issue related to concurrency: any concurrent account updates will result in a valid ledger.
 
+\subsection{Compatible System Models}
 
-\section{Design Dimensions}
-\label{sec:design-issues}
+The design we presented is compatible with crash recoveries~\cite{cachin2011introduction}, as long as replicas eventually recover and stay available long enough to exchange the latest state information. In case a replica crashes and never recovers, only the latest operations that could not be replicated prior to the crash will be lost. 
 
-In this section, we outline the design space for eventually-consistent ledgers. We sketch the general design directions but in all cases, we leave specific implementation details out to be covered in future papers.
+Our design is however not compatible with adversarial replicas because the latter could allow accounts that are not part of the creator set to create an arbitrary number of tokens, as well as transfer arbitrary amounts of tokens to other accounts regardless of their local balance. 
 
-\subsection{Who can create tokens?}
 
-The design we presented, and the invariant we prove later, are compatible with different restrictions for token creation. For example:
-\begin{itemize}
-	\item \textit{All accounts}: The creation of a given token type may also be enabled for all accounts. However, this design point \textit{a priori} does not look interesting since any account might create an arbitrarily large amounts which would devalue all other tokens in circulation.
-	\item \textit{Single account}: The creation of tokens can only be done by a single account, by linking the token type to the account identifier;
-	\item \textit{Small number of accounts}: The creation of tokens can be done by a subset of accounts $\mathds{C} \subset \mathds{A}$, presumably with $\mathds{C}$ significantly smaller than $\mathds{A}$. This enables concurrent creation of tokens, maintaining liveness when some accounts might other otherwise be unavailable for updates.
-\end{itemize}
+\subsection{Safety and Liveness Properties of Account Balances}
 
-It is possible to enforce that creation can happen only from a single or a small number of account using basic cryptographic primitives.
 
-%In all cases, the same system may deal with multiple concurrent ledgers with different creators for each, so restrictions on the ability of most identifiers to create tokens in a given ledger do not prevent any identifier to create new tokens in other ledgers. Ultimately the value of any tokens created derives from the trust-worthiness of their creator and the willingness of users to accept them~\cite{lavoie2022localcryptotokens}.
+Given a set $\mathcal{A}$ of the largest state of every account (differentiated by $id$) across replicas and a set $\mathcal{C \subseteq \mathcal{A}}$ of accounts allowed to create tokens, the tokens circulating between accounts with non-negative balance either were created or were overspent but not burnt. Formally, the following equality always hold and is therefore a safety property of the design (see proof in Section~\ref{sec:proof:balance-safety}):
 
-\subsection{Can balances be temporarily negative?}
-\label{sec:design-neg-balance-choice}
+\begin{equation}
+\label{eq:balance-safety}
+\sum\limits_{A \in \mathcal{A}^{\geq 0}} \texttt{balance}(A) \leq  
+		\sum\limits_{C \in \mathcal{C}} C_\uparrow 
+		- \sum\limits_{A \in \mathcal{A}} A_\downarrow 
+		+ \sum\limits_{A \in \mathcal{A}^{< 0}}  -\texttt{balance}(A)
+\end{equation}
 
-Depending on applications, the balance of all accounts might be required to stay strictly positive at all times or might be allowed to become negative during some concurrent updates. In both cases, the design we presented ensures that all replicas converge eventually to the same state, even if it is to a negative balance. In the next sections, we outline the impact on the rest of the design of either choice.
+For deployments in which negative balances are ruled out by design, \textit{e.g.} if concurrent operations on the same account are not possible, then the inequality simply says that tokens in circulation were created but not burnt.
 
-\subsubsection{The balance should be strictly positive at all times}
 
-If \texttt{burn} or \texttt{giveTo} operations should never result in a negative balance, then state modifications to every account should be strictly sequential (see Theorem~\ref{proof:positive-bal-seq-order}). A sequential ordering may be obtained through different mechanisms:
-\begin{itemize}
-    \item \textit{Consensus}: Using some form of agreement protocol between replicas to order updates consistently;
-    \item \textit{Master state}: By storing the latest state of the account on a single device (ex: usb key or hardware token) and requiring any replica to update it after every operation;
-    \item \textit{Single replica}: By enforcing that modifications can only be issued by a unique replica (device). A physical person may still control multiple accounts but each account should be linked to a single replica.
-\end{itemize}
+A slight variation replacing $\mathcal{A}$ by a ledger $L$ such that $\texttt{values}(L) \subseteq \mathcal{A}$, locally holds as long as $L$ is a \textit{transitive closure} over all accounts, \textit{i.e.},  as long as all accounts that sent tokens that were acknowledged by accounts in $L$ are also in $L$. Formally, the inequality is true if $\texttt{values}(L)$ contains all accounts that are referred by $id$ in $A_{\leftarrow *}$ for every account $A$ in $\texttt{values}(L)$:
 
-Any other mechanism is also possible as long as no concurrent state updates are possible.
+\begin{eqnarray*}
+\label{eq:balance-safety-ledger}
+ & \texttt{values}(L) = \{ A \in \mathcal{A} : \exists A' \in \texttt{values}(L) \wedge A_{\scriptsize \textbf{id}} \in A'_{\leftarrow *} \} 
+\Rightarrow \\
+& \sum\limits_{A \in \texttt{values}(L)^{\geq 0}} \texttt{balance}(A) \leq  
+		\sum\limits_{C \in \mathcal{C}} C_\uparrow 
+		- \sum\limits_{A \in \texttt{values}(L)} A_\downarrow 
+		+ \sum\limits_{A \in \texttt{values}(L)^{< 0}}  -\texttt{balance}(A)
+\end{eqnarray*}
 
-\subsubsection{The balance may be negative sometimes}
+This is the case, because whatever the state of sender accounts, they cannot influence the balance of other accounts unless the tokens they sent were first acknowledged. If $L$ is not a transitive closure of accounts, the inequality may or may not hold: \textit{e.g.}, if $\mathcal{A}$ contains only two accounts $A$ and $C$ with different ids such that $C \in \mathcal{C}$, $A \notin \mathcal{C}$, $\texttt{values}(L) = \{ A \}$, and $C$ has given tokens to $A$.
 
-If \texttt{burn} or \texttt{giveTo} operations may sometimes result in a negative balance during concurrent updates, then general complementary strategies are still possible:
-\begin{itemize}
-	\item \textit{Allow updates with small amounts compared to the balance}: In that case, the probability that there would be a sufficient number of concurrent small updates that would result in a negative balance is small and therefore in most likelihood future merges will result in a positive balance. This approach increases \textit{availability} (liveness) of the system will limited additional complexity;
-	\item \textit{De-incentivize with negative reputation}: For example, reporting the number of times and the cumulative negative account balance over the lifetime of an $id$ will alert other participants that the $id$, and associated accounts, are less trust-worthy than others and should be de-prioritized during exchanges. This approach increases the trust of users (\textit{safety}) in the system;
-	\item \textit{Incentivize and even enforce a positive balance to participate}: For example, a platform using eventually-consistent ledgers may degrade and even refuse services to an identifier $id$ unless their associated account is positive;  This approach also increases the trust of users (\textit{safety}) in the system;
-\end{itemize}
+The inequality still holds for accounts states in the ledger that are not the latest among all leders, as long as the state of every sender accounts $S$ in $L$ is greater or equal than they were at the time the receiver account $R$ acknowledged receiving the token, which is true if and only if $R_{\leftarrow}[S_{\scriptsize \textbf{id}}] \leq S_{\rightarrow}[R_{\scriptsize \textbf{id}}]$. This is always the case in concurrent execution in which all operations we presented for ledgers and accounts terminate.
 
-In all previous cases, the service should allow an account to receive additional tokens \textit{after} its balance became negative in order to restore its positive state. 
-
-The failure to implement negative feedback mechanisms as above, without the ability to prevent account owners from spending more tokens than they have, would most likely result in the devaluation of all tokens and the lost of trust in the system. We therefore recommend implementing at least \textit{some} negative feedback mechanism.
-
-\subsection{Who manages the replicas?}
-
-\begin{itemize}
-	\item \textit{A single organization} \textit{(centralized)}
-	\item \textit{Multiple organizations}  \textit{(federated)}
-	\item \textit{End-users} \textit{(peer-to-peer)}
-\end{itemize}
-
-
-\section{System Model}
-
-
-
-
-\section{Related Work}
-
-\subsection{Blockchains}
-
- In contrast to Bitcoin~\cite{bitcoin}, we decouple the sending and reception of tokens in a transaction: upon a \textit{give} operation, the balance of the sender is immediately decreased but the receiver balance is not immediately increased by the same amount.  The increase on the receiver side happens only  after an explicit \textit{acknowledgement}. 
-
-Survey~\cite{weichao2018blockchain}
-
-\subsection{Consensus-Free Ledgers} 
-
-Gupta's Master thesis~\cite{gupta2016nonconsensusdft} is the earliest published work to our knowledge that describe a consensus-free ledger.
-
-Astro~\cite{collins2020broadcast-payment} executes payment by broadcasting, using a Byzantine reliable broadcast in a permissioned setting showing the throughput and latency benefits of not using consensus because it is not actually need for asset transfer~\cite{guerraoui2021consensus}. 
-Astro partitions replicas in shards among which Byzantine reliable broadcast is necessary but does not require agreement from all replicas because, similar to the property we leverage, the amount received from a payment need only be equal \textit{eventually} to the amount sent, the validity of the transfer only depends on the state of the sender. Astro uses exclusive logs (\textit{xlog}) that are equivalent to the single-writer append-only logs of Secure-Scuttlebutt (SSB)~\cite{kermarrec2020gossiping,tarr2019ssb} and Hypercore~\cite{hypercore-website} (see Section~\ref{sec:p2p-db}), whose designs was inspired by a reconciliation protocol~\cite{vanRenesse2008reconciliation} published by Amazon researchers in 2008. Astro prevents concurrent modifications of the same account by ordering transactions from the same sender with a Byzantine reliable broadcast among replicas. In contrast, our replicated ledger design does not prevent concurrent modifications but guarantees that all replicas will converge to the same (possibly negative) balance when they arise.
-
-Fast-Pay~\cite{baudet2020fastpay} uses managed replicas, called authorities, to ensure sequential operations on every account and therefore remove the possibility of overspending. In contrast to our design, the creation (and destruction) of tokens is done externally to the Fast-Pay system by anchoring the payment system to an existing blockchain or centrally-managed database. Similar to Astro~\cite{collins2020broadcast-payment}, it shows that much lower latency and higher throughput are possible when carefully designing the system to avoid the need for consensus.
-
-Auvolat \textit{et al.}~\cite{auvolat2021money} also obtain a consensus-free ledger by decoupling the aggregation of incoming and outgoing amounts as we do but define the core algorithms in terms of operations over a causal history, and explore the effects of the underlying broadcast channel, instead of our stateful formulation as a collection of grow-only counters. Our formulation removes the need to reason about causal histories and as all state-based CRDTs only require eventual delivery of the latest state instead of a reliable broadcast primitive.
-
-
-ABC~\cite{sliwinski2020abc} is a proof-of-stake blockchain that does not require consensus, specifically relying instead on a weaker termination property that only guarantees termination of operations for honest (non double-spending) participants. The design is also based on an operation view that explicitly represents and store the operations as a directed-acyclic graph (DAG) of transactions, to determine the balance of participants. The state of the ledger for a given causal history, \textit{i.e.} DAG of transactions, can be derived as a \textit{checkpoint} to summarize the past and speed up validation.
-
-Bezerra and Kuznetsov~\cite{bezerra2022tame}, instead of outright preventing overspending, bound the number of times the same tokens can be spent with verifiable evidence that the same tokens have been spent multiple times. They also suggest possible strategies once overspending has been detected.
-
-Frey \textit{et al.}~\cite{frey:hal-03346756} show how Mazurkiewicz’s traces can be used to formalize ledgers in which operations between different processes commute but operations on the same process are sequential.
-
-Permisionless and Asynchronous Asset Transfer: Pastro which work in an adversarial setting~\cite{kuznetsov2021permissionless} weighted quorums using stakes. Also implemented on top of reliable broadcast. Assumes a dynamic adversary.
-
-Opportunistic Algorithmic Double-Spending~\cite{cryptoeprint:2021/1182}
-
-Hearsay for Distributed Monetary System~\cite{georghiades2021needs}
-
-Handling message semantics with generic broadcast protocols~\cite{pedone2002genericbroadcast}
-
-Consensus number of a crypto-currency ~\cite{guerraoui2021consensus}
-
-Cholvi \textit{et al.}~\cite{cholvi2021bdso} introduced Byzantine-Tolerant Replicated Grow-Only Sets to implement atomic appends in a ledger-like structure without the need for consensus, in an adversarial environment. Similar to other work on consensus-free ledgers, they base their semantics on broadcast abstractions while we base our account semantics on state-based CRDTs. This shows solutions in adversarial environments exists but finding simplest mechanisms that would still be compatible with our state-based approach is still an open problem.
-
-
-In self-sovereign cryptocurrencies~\cite{shapiro2023sovereign}, Shapiro identifies general desirable economic properties of cryptocurrencies that can be issued and traded by anyone, people, communities, corporations, banks, municipalities and banks and provide a protocol that meets these properties. In complement, Lavoie and Tschudin~\cite{lavoie2022localcryptotokens} highlight that transactions costs in regular consensus-based blockchains, such as Bitcoin and Ethereum, are larger than many local economic applications can support, argue for eventual detection rather than prevention of over-spending, and identify potential applications. The design of our conflict-free replicated ledger is a step in the direction of cryptotokens that meet both, but would require additional mechanisms to be fault-tolerant in adversarial settings.
-
-
-\subsection{Conflict-Free Replicated Data Types} 
-
-Conflict-Free Replicated Data Types (CRDTs)~\cite{shapiro:hal-00932836} are replicated mutable objects that are designed to ensure converge to the same state \textit{eventually}, \textit{i.e.}, at some point in the future after updates have stopped, and \textit{automatically}, \textit{i.e.} using deterministic conflict-resolution rules in the presence of concurrent updates. An initial survey of useful data types~\cite{shapiro:inria-00555588} kickstarted the field, which has blossomed into over a hundred publications, as listed on a dedicated website~\cite{crdt-website}.
-
-To our knowledge, there are no other published state-based conflict-free replicated ledgers, as listed on the aforementioned website~\cite{crdt-website}. That being said, the community exploring CRDTs seems to run parallel to the distributed computing community with slightly different, but ultimately connected, formalisms. For example, the designs presented in \cite{guerraoui2021consensus} and \cite{collins2020broadcast-payment} can be considered operation-based CRDTs since their operations commute, \textit{i.e.} the order in which transfers are received does not matter as long as they are delivered in their sending order. It appears the distributed computing community tends to favour an operation-based view and encapsulates the relevant properties into broadcast abstractions, as surveyed for example in this textbook~\cite{cachin2011introduction}, while the CRDT community explores both state-based and operation-based approaches.  
-
-
-TODO: Delta-CRDT (see portfolio example)~\cite{Almeida2018delta}
-
-\subsection{Consistency Models for Replicated Objects}
-
-Viotti and  Vukoli\'{c} surveyed all major consistency models that have been proposed for operations on distributed objects up to 2016~\cite{viotti2016consistency-db-survey}, with formal definitions for each. They also relate all consistency models into a partial order, which helps highlight how the strong eventual consistency~\cite{shapiro:hal-00932836} approach taken by CRDTs, and used by our State-based Conflict-Free Replicated Ledger, runs parallel to most mother consistency models previously explored.
-
-\subsection{Peer-to-Peer Eventually-Consistent Replicated Databases}
-\label{sec:p2p-db}
-
-The design we presented started as an exploration to implement a replicated ledger for Secure-Scuttlebutt (SSB)~\cite{kermarrec2020gossiping,tarr2019ssb}, an eventually consistent database based on single-writer append-only logs combined with peer-to-peer reconciliation protocols. The append-only logs provide a sequential ordering based on cryptographic hashes and signatures, which would be sufficient to maintain non-negative account balances. However, the reconciliation protocol of Secure-Scuttlebutt does not tolerate \textit{forks}, \textit{i.e.}, a concurrent message inserted at the same index in a log, potentially intentionally by a malicious participant in their own log, turns the log into a tree. In the presence of forks, replicas will only accept updates on the branch they initially started replicating and forever reject all others, which may result in an irreconcilable partitioning of replicas. Hypercore~\cite{hypercore-website}, previously known as DAT~\cite{ogden2017dat,robinson2018dat} and now maintained by Holepunch~\cite{holepunch-website}, is also an eventually consistent database based on single-writer append-only logs. It suffers from the same \textit{fork} issue~\cite{hypercore-handling-conflicts,hypercore-split-resolution-dep}  as SSB. Both designs are therefore not sufficient to implement our replicated ledger (and is not eventually consistent!) in an adversarial environment. Solving the fork issue in a peer-to-peer adversarial environment is still an open question.
- 
-\section{Future Work}
- 
-\subsection{Limiting the Creator Set}
-
-\subsection{Tolerating Arbitrary Failures}
-
-	\subsubsection{Collusion-Resistance}
-
-\subsection{Limiting the Visibility of Transactions}
-
-\subsection{Eventually-Consistent Reputation and Access-Control Mechanisms}
-
-\subsection{Implementation Techniques for Resource-Limited Devices}
-
-\section{Conclusion}
-\label{sec:conclusion}
-
-Implementation techniques for restricting token creation, which can potentially be based on cryptographic techniques, will be covered in future work.
-
-\section{Acknowledgements}
-\label{sec:acknowledgements}
-
-We thank Christian F. Tschudin for fostering a research environment allowing detours and playfulness in the process, as well as providing financial support for this work and feedback on earlier versions of this work. The idea of investigating the possibilities offered by allowing accounts to converge to a negative balance in some circumstances was first suggested by him. Once the prejudice against negative balances was abandoned, that opened the possibility of expressing accounts as state-based CRDTs and greatly simplified the design.
-
-I would also like to thank Prof. Dr. Tschudin for having initiated a CRDT seminar and invited me to co-teach it, which created the opportunity of learning how to formalize CRDT algorithms. I was initially planning to write a system paper on a similar design. However, after 6-7 design iterations, it became obvious that the design had subtleties that greatly benefitted from a more formal treatment to tease out and get right. The teaching of the CRDT seminar happened exactly at the right time to review fundamentals of distributed algorithms in general, and CRDTs in particular, to ramp up the skills to carry such work.
-
-
-
-\newpage
-
-\bibliographystyle{plainurl}
-\bibliography{main}
-
-\newpage
-\appendix
+Finally, all the previous inequality are eventually turned into strict equalities if every receiver account eventually acknowledges the tokens that were sent (see proof in Section~\ref{sec:proof:balance-liveness}). Replacing the safety property from an equality into an inequality is a key insight that allows an eventually consistent implementation of a ledger.
 
 \section{Proofs}
 \label{sec:proofs}
+
+In this section, we prove the properties discussed informally in Section~\ref{sec:design}.
 
 \subsection{Definitions}
 
@@ -594,8 +504,6 @@ Because an account state is the composition of \textit{grow-only counters} ($A_\
 
 \subsubsection{Account}
 \label{sec:proof:account}
-
-
 
 \begin{proof}
         \prove{The Account design listed in Alg.~\ref{alg:account} and Alg.~\ref{alg:account-ordering} is a state-based (convergent) CRDT.}
@@ -752,6 +660,7 @@ Because an account state is the composition of \textit{grow-only counters} ($A_\
 
 
 \subsubsection{Ledger}
+\label{sec:proof:ledger}
 
 
 \label{th:ledger-crdt}
@@ -973,6 +882,7 @@ Alternatively a direct proof, using the definition of upper least bound:
 
 
 \subsubsection{Sequences of Account Operations Maintain a Non-Negative Balance}
+\label{section:proof:sequential-non-negative}
 
 
 \assume{\begin{pfenum}
@@ -1096,6 +1006,7 @@ Alternatively a direct proof, using the definition of upper least bound:
 \end{proof}
 
 \subsubsection{Merging Non-negative Accounts May Result in a Negative Balance}
+\label{sec:proofs:merge-concurrent-accounts}
 
 \define{\begin{pfenum}
 	\item $A \in \mathds{A} : \texttt{balance}(A) \geq 0$
@@ -1240,7 +1151,9 @@ Alternatively a direct proof, using the definition of upper least bound:
 	\end{proof}
 \end{proof}
 
-\subsubsection{Safety: Net Balance}
+\subsubsection{Safety: Net Tokens Owned were Created or Overspent, and not Burnt}
+\label{sec:proof:balance-safety}
+
 
 \define{\begin{pfenum}
 	\item $\mathcal{L}$ is the set of all ledger replicas at any time
@@ -1295,7 +1208,8 @@ Alternatively a direct proof, using the definition of upper least bound:
 	\end{proof}
 \end{proof}
 
-\subsubsection{Liveness: Eventual Balance}
+\subsubsection{Liveness: Eventual Balance Equality}
+\label{sec:proof:balance-liveness}
 
 \define{~Same definitions as previous section.}
 \prove{If no more \texttt{giveTo} operation is performed and every receiver account $R \in \mathds{A}$ eventually acknowledges all amounts sent by every sender account $S \in \mathds{A}$ (including $R=S$) with \texttt{ackFrom}, then eventually: \newline 
@@ -1304,6 +1218,101 @@ Alternatively a direct proof, using the definition of upper least bound:
 		- \sum\limits_{A \in \mathcal{A}} A_\downarrow 
 		+ \sum\limits_{A \in \mathcal{A}^{< 0}}  -\texttt{balance}(A) $.}
 \pf~ If all receiver accounts $R \in \mathcal{A}$ eventually acknowledge all amounts sent from sender accounts $S \in \mathcal{A}$ to $R$, then eventually $R_{\leftarrow}[S_{\scriptsize \textbf{id}}] = S_{\rightarrow}[R_{\scriptsize \textbf{id}}]$. This turns the inequality from the previous section into an equality.
+
+
+\section{Related Work}
+\label{sec:related-work}
+
+To the best of our knowledge, we are the first to implement an eventually-consistent ledger as a state-based Conflict Free Replicated Data Type (CRDT), including the ability for a subset of participants to create tokens. In this section, we survey related work.
+
+\subsection{Consensus-Based Replicated Ledgers}
+
+At the time of writing, the most popular approach to implement replicated ledgers is a \textit{blockchain}, \textit{i.e.} a global append-only log of updates with a total order that is established by the use of a consensus algorithm. The two most popular blockchains are Bitcoin~\cite{nakamoto2008bitcoin} and Ethereum~\cite{buterin2014next}. The large body of published work around blockchains is covered in multiple surveys that cover the main concepts behind blockchains~\cite{weichao2018blockchain,kolb2020survey-blockchains-ethereum} as well as specific aspects such as security and privacy~\cite{zhang2020survey-security-privacy-blockchains}, networking~\cite{dotan2022survey-blockchain-networking}, and smart-contracts implementing replicated state machines~\cite{kolb2020survey-blockchains-ethereum}. To improve scalability, some newer designs use a directed acyclic graph instead of an append-only log~\cite{kolb2020survey-blockchains-ethereum} but still rely on consensus to order updates.
+
+Our design departs from blockchains in multiple ways. First, we decouple the sending and reception of tokens in a transaction: \textit{i.e.}, the sender account balance is immediately decreased but the receiver account balance is only increased \textit{eventually} after having replicated the sender account's latest state and acknowledged the sending. This decoupling enables an eventually consistent design. Second, token creation is done by a subset of accounts instead of through a mining protocol, as in Bitcoin~\cite{nakamoto2008bitcoin} or Ethereum~\cite{buterin2014next}. This approach enables \textit{local crypto-tokens}~\cite{lavoie2022localcryptotokens}. Third, our design covers the possibility of concurrent updates to the same account, which may result in a negative balance, while blockchains sequentially order all transactions \textit{among all accounts} to prevent this possibility. For applications for which a temporary negative balance is not critical (see Section~\ref{sec:economics}), our design is simpler and more efficient. Otherwise, for applications in which negative balances should be prevented, more frugal approaches suffice, as we discuss in the next section. 
+
+\subsection{Consensus-Free Replicated Ledgers}
+\label{sec:consensus-free-ledgers}
+
+The total ordering of blockchain transactions is stronger than necessary to prevent overspending: sequential ordering of a single account's operations (Section~\ref{section:proof:sequential-non-negative}) or even only outgoing transactions from that account~\cite{guerraoui2021consensus} suffices. This insight, which to our knowledge has first been leveraged in Gupta's Master thesis~\cite{gupta2016nonconsensusdft} in 2016, has since motivated many subsequent theoretical designs and practical implementations. 
+
+To our knowledge, all published work on consensus-free ledgers rely on broadcast abstractions~\cite{collins2020broadcast-payment,baudet2020fastpay,sliwinski2020abc,guerraoui2021consensus,auvolat2021money,frey:hal-03346756,kuznetsov2021permissionless,cholvi2021bdso,georghiades2021needs} that require reliable delivery of all updates. Our state-based approach works with unreliable channels, with fewer messages, and with incomplete communication topology, as long as state updates are eventually transitively delivered to all replicas. Our state approach has the added benefit of automatically combining multiple outgoing transfers to the same receiver into a single state update. That being said, the previous work tolerates adversarial environments while the design we presented does not. It is still an open question whether equivalent state-based solutions exist.
+
+The practical benefits of foregoing consensus, resulting in much higher throughput and significantly lower latency compared to conventional blockchains, are dramatically illustrated by Astro~\cite{collins2020broadcast-payment} and Fast-Pay~\cite{baudet2020fastpay}. Both designs use managed replicas to ensure client operations are sequentially ordered, and therefore prevent overspending, even if any number of clients or less than 1/3 of replicas are adversarial (Byzantine). It is still an open question of how to design practical payment systems that would work in open adversarial settings, without resorting to 2/3 of trusted replicas within a managed environment.
+
+%Astro~\cite{collins2020broadcast-payment} executes payment by broadcasting, using a Byzantine reliable broadcast in a permissioned setting showing the throughput and latency benefits of not using consensus because it is not actually need for asset transfer~\cite{guerraoui2021consensus}. 
+%Astro partitions replicas in shards among which Byzantine reliable broadcast is necessary but does not require agreement from all replicas because, similar to the property we leverage, the amount received from a payment need only be equal \textit{eventually} to the amount sent, the validity of the transfer only depends on the state of the sender. Fast-Pay~\cite{baudet2020fastpay} uses managed replicas, called authorities, that sequentially order and verify account operations.
+
+
+%Fast-Pay~\cite{baudet2020fastpay} uses managed replicas, called authorities, to ensure sequential operations on every account and therefore remove the possibility of overspending. In contrast to our design, the creation (and destruction) of tokens is done externally to the Fast-Pay system by anchoring the payment system to an existing blockchain or centrally-managed database. Similar to Astro~\cite{collins2020broadcast-payment}, it shows that much lower latency and higher throughput are possible when carefully designing the system to avoid the need for consensus.
+
+%Auvolat \textit{et al.}~\cite{auvolat2021money} also obtain a consensus-free ledger by decoupling the aggregation of incoming and outgoing amounts as we do but define the core algorithms in terms of operations over a causal history, and explore the effects of the underlying broadcast channel, instead of our stateful formulation as a collection of grow-only counters. Our formulation removes the need to reason about causal histories and as all state-based CRDTs only require eventual delivery of the latest state instead of a reliable broadcast primitive.
+
+
+%ABC~\cite{sliwinski2020abc} is a proof-of-stake blockchain that does not require consensus, specifically relying instead on a weaker termination property that only guarantees termination of operations for honest (non double-spending) participants. The design is also based on an operation view that explicitly represents and store the operations as a directed-acyclic graph (DAG) of transactions, to determine the balance of participants. The state of the ledger for a given causal history, \textit{i.e.} DAG of transactions, can be derived as a \textit{checkpoint} to summarize the past and speed up validation.
+
+%Frey \textit{et al.}~\cite{frey:hal-03346756} show how Mazurkiewicz’s traces can be used to formalize ledgers in which operations between different processes commute but operations on the same process are sequential.
+
+%Permisionless and Asynchronous Asset Transfer: Pastro which work in an adversarial setting~\cite{kuznetsov2021permissionless} with weighted quorums using stakes. Also implemented on top of reliable broadcast. Assumes a dynamic adversary.
+
+%Consensus number of a crypto-currency ~\cite{guerraoui2021consensus} models accounting operations of a ledger as a concurrent shared memory system and shows that the consensus number of asset transfers is 1, that is transferring tokens does not require consensus.
+
+%Cholvi \textit{et al.}~\cite{cholvi2021bdso} introduced Byzantine-Tolerant Replicated Grow-Only Sets to implement atomic appends in a ledger-like structure without the need for consensus, in an adversarial environment. Similar to other work on consensus-free ledgers, they base their semantics on broadcast abstractions while we base our account semantics on state-based CRDTs. This shows solutions in adversarial environments exists but finding simplest mechanisms that would still be compatible with our state-based approach is still an open problem.
+
+%Hearsay~\cite{georghiades2021needs} shows that similar Byzantine-resilience without consensus can be implemented when 2/3 of participants are \textit{rational} instead of correct, that is they will follow the protocol as long as it is in their self-interest to do so.
+
+
+
+\subsection{Conflict-Free Replicated Data Types} 
+
+Conflict-Free Replicated Data Types (CRDTs)~\cite{shapiro:hal-00932836} are replicated mutable objects that are designed to ensure converge to the same state \textit{eventually}, \textit{i.e.}, at some point in the future after updates have stopped, and \textit{automatically}, \textit{i.e.} using deterministic conflict-resolution rules in the presence of concurrent updates. An initial survey of useful data types~\cite{shapiro:inria-00555588} kickstarted the field, which has blossomed into over a hundred publications, as listed on a dedicated website~\cite{crdt-website}.
+
+To our knowledge, there are no other published state-based conflict-free replicated ledgers, as listed on the aforementioned website~\cite{crdt-website}. That being said, the community exploring CRDTs seems to run parallel to the distributed computing community with slightly different, but ultimately connected, formalisms. From a theoretical standpoint, Viotti and  Vukoli\'{c} surveyed all major consistency models that have been proposed for operations on distributed objects up to 2016, including CRDTs,  and organized them in a partial order~\cite{viotti2016consistency-db-survey}. Their survey shows that CRDTs consistency model runs parallel to most others published. From a practical standpoint, the designs presented in \cite{guerraoui2021consensus} and \cite{collins2020broadcast-payment} can be considered operation-based CRDTs since their operations commute, \textit{i.e.}, the order in which transfers are received does not matter as long as they are delivered in their sending order. Nonetheless, state-based replicated object designs are uncommon and mostly explored by the CRDT community, as illustrated by the fact that other replicated ledgers we have found all use an operational approach, based on reliable broadcast (see Section~\ref{sec:consensus-free-ledgers}).
+
+A natural refinement of our state-based conflict-free replicated ledger would be to reformulate updates as a $\delta$-CRDT~\cite{Almeida2018delta}, a state-based CRDT approach that reduces the amount of state required to be sent based on the state already possessed by other replicas, either known from a stateful connection with other replicas~\cite{Almeida2018delta} or derived from meta-data~\cite{vanderLinde06delta}. We leave this for future work.
+
+\subsection{Peer-to-Peer Eventually-Consistent Replicated Databases}
+\label{sec:p2p-db}
+
+The design we presented started as an exploration to implement a replicated ledger for Secure-Scuttlebutt (SSB)~\cite{kermarrec2020gossiping,tarr2019ssb}, an eventually consistent database based on single-writer append-only logs combined with peer-to-peer reconciliation protocols. Hypercore~\cite{hypercore-website}, previously known as DAT~\cite{ogden2017dat,robinson2018dat} and now maintained by Holepunch~\cite{holepunch-website}, is another eventually consistent database based on single-writer append-only logs. The append-only logs provide a sequential ordering based on cryptographic hashes and signatures, which would be sufficient to maintain non-negative account balances.  Both designs predate the equivalent exclusive logs used by Astro~\cite{collins2020broadcast-payment} (mentioned in Section~\ref{sec:consensus-free-ledgers}) and were inspired by a reconciliation protocol~\cite{vanRenesse2008reconciliation} published by Amazon researchers in 2008. 
+
+However, the reconciliation protocol of Secure-Scuttlebutt does not tolerate \textit{forks}, \textit{i.e.}, a concurrent message inserted at the same index in a log, potentially intentionally by a malicious participant in their own log, that turns the log into a tree. In the presence of forks, replicas will only accept updates on the branch they initially started replicating and forever reject all others, which may result in an irreconcilable partitioning of replicas.  Hypercore suffers from the same issue~\cite{hypercore-handling-conflicts,hypercore-split-resolution-dep}  as SSB. Both designs are therefore not sufficient to implement our replicated ledger (and are not eventually consistent!) in an adversarial environment. How to deal with forks of single-writer append-only logs in a peer-to-peer adversarial environment is still an open question.
+
+\subsection{Economics}
+\label{sec:economics}
+
+In self-sovereign cryptocurrencies~\cite{shapiro2023sovereign}, Shapiro identifies general desirable economic properties of cryptocurrencies that can be issued and traded by anyone (individuals, communities, corporations, municipalities, banks, etc.) and provide a protocol that meets these properties. In complement, Lavoie and Tschudin~\cite{lavoie2022localcryptotokens} highlight that transactions costs in regular consensus-based blockchains, such as Bitcoin and Ethereum, are larger than many local economic applications can support, argue for eventual detection rather than prevention of over-spending, and identify potential applications. The design of our conflict-free replicated ledger is a step in the direction of cryptotokens that meet both, but would require additional mechanisms to be fault-tolerant in adversarial settings.
+
+To that end, core economic assumptions made by blockchains Bitcoin~\cite{nakamoto2008bitcoin} and Ethereum~\cite{buterin2014next}, and commonly assumed by many system designers of alternative systems, are worth revisiting. For example, the total number of tokens an account can create with our design is not bounded, which enables local applications in which the value of the tokens derives from the trust in the issuer rather than their scarcity~\cite{lavoie2022localcryptotokens}. Moreover, overspending, which results in a negative account balance, may not be much of an issue in some local economic applications. For example, drawing against a negative balance (up to a certain bound) is already a core aspect of mutual credit systems~\cite{schraven2001mutual}. It is also common for trusted participants in local economies to provide credit to one another: we have ourselves committed (and fulfilled our promise!) to pay back later after realizing we did not have enough money on us to pay for a haircut; we also witnessed other regular clients of a convenience store in Saint-Sulpice (Switzerland) do the same! 
+
+%This possibility has started been explored theoretically: Bezerra and Kuznetsov~\cite{bezerra2022tame}, bound the number of times the same tokens can be spent with verifiable evidence that the same tokens have been spent multiple times and suggest possible strategies once overspending has been detected.
+
+\section{Conclusion and Future Work}
+\label{sec:conclusion}
+
+We presented GOC-Ledger, a replicated ledger as a state-based conflict-free replicated data type based on grow-only counters. Our design lowers requirements on communication channels and topology between replicas, eventually converges even in the presence of negative balances without having to maintain a causal history of operations, and non-negative balances may be enforced by auxiliary mechanisms that ensure individual account updates are sequential.
+
+We plan to design complementary techniques for deployments in adversarial environments, implement the design on top of eventually-consistent replicated databases, and measure its performance on realistic traces.
+
+\section{Acknowledgements}
+\label{sec:acknowledgements}
+
+I would like to thank Christian F. Tschudin for fostering a research environment allowing detours and playfulness in the process, as well as providing financial support for this work and feedback on earlier versions of this work. The idea of investigating the possibilities offered by allowing accounts to converge to a negative balance in some circumstances was first suggested by him. Once the prejudice against negative balances was abandoned, that opened the possibility of expressing accounts as state-based CRDTs and greatly simplified the design.
+
+I would also like to thank Christian F. Tschudin for having initiated a CRDT seminar and invited me to co-teach it, which created the opportunity of learning how to formalize CRDT algorithms. I was initially planning to write a system paper on a similar design. However, after 6-7 design iterations, it became obvious that the design had subtleties that greatly benefitted from a more formal treatment to tease out and get right. The teaching of the CRDT seminar happened exactly at the right time to review fundamentals of distributed algorithms in general, and CRDTs in particular, to ramp up the skills to carry such work.
+
+I would like to thank Osman Biçer for feedback on early version of this draft, especially regarding proof presentation.
+
+
+
+\newpage
+
+\bibliographystyle{plainurl}
+\bibliography{main}
+
+\newpage
+\appendix
+
 
 
 
