@@ -1,4 +1,4 @@
-\documentclass[9pt, oneside]{article}   	% use "amsart" instead of "article" for AMSLaTeX format
+\documentclass[9pt]{article}   	% use "amsart" instead of "article" for AMSLaTeX format
 \usepackage{geometry}                		% See geometry.pdf to learn the layout options. There are lots.
 \geometry{a4paper}                   		% ... or a4paper or a5paper or ... 
 %\geometry{landscape}                		% Activate for rotated page geometry
@@ -26,7 +26,7 @@
 \newcommand{\localop}{\overset{\textbf{local}}\rightarrow}
 \newcommand{\anyop}[1]{\overset{#1}\rightarrow}
 
-\title{GOC-Ledger: State-based Conflict-Free Replicated Ledger based on Grow-Only Counters}
+\title{GOC-Ledger: State-based Conflict-Free Replicated Ledger from Grow-Only Counters}
 \author{Erick Lavoie \\
 University of Basel \\
 \href{mailto:erick.lavoie@unibas.ch}{erick.lavoie@unibas.ch}}
@@ -38,9 +38,9 @@ University of Basel \\
 
 
 \begin{abstract}
-Conventional blockchains use consensus algorithms that totally order updates across all accounts, which is stronger than necessary to implement a replicated ledger. This makes updates slower and more expensive than necessary. More recent consensus-free replicated ledgers forego consensus algorithms, with significant increase in performance and decrease in infrastructure costs. However, current designs are based around reliable broadcast of update operations to all replicas, which makes reasoning about replicated ledgers harder than necessary.
+Conventional blockchains use consensus algorithms that totally order updates across all accounts, which is stronger than necessary to implement a replicated ledger. This makes updates slower and more expensive than necessary. More recent consensus-free replicated ledgers forego consensus algorithms, with significant increase in performance and decrease in infrastructure costs. However, current designs are based around reliable broadcast of update operations to all replicas which require reliable message delivery and reasoning over operation histories to establish convergence and safety.
 
-In this paper, we present a replicated ledger as a state-based conflict-free replicated data type (CRDT) based on grow-only counters. This design provides multiple benefits: 1) it requires a weaker eventual transitive delivery of the latest state rather than reliable broadcast of all update operations to all replicas; 2) eventual convergence, even to negative balances, can be proven easily from the composition of grow-only counters without having to  reason over operation histories; 3) applications that tolerate temporary negative balances require no additional mechanisms; 4) applications that require strictly non-negative balances can be supported by enforcing sequential updates to the same account across replicas.
+In this paper, we present a replicated ledger as a state-based conflict-free replicated data type (CRDT) based on grow-only counters. This design provides two major benefits: 1) it requires a weaker eventual transitive delivery of the latest state rather than reliable broadcast of all update operations to all replicas; 2) eventual convergence and safety properties can be proven easily without having to reason over operation histories: convergence comes from the composition of grow-only counters, themselves CRDTs, and safety properties can be expressed over the state of counters, locally and globally. In addition, applications that tolerate temporary negative balances require no additional mechanisms and applications that require strictly non-negative balances can be supported by enforcing sequential updates to the same account across replicas.
 
 Our design is sufficient when executing on replicas that might crash and recover, as common in deployments in which all replicas are managed by trusted entities. It may also provide a good foundation to explore new mechanisms for tolerating adversarial replicas.
 \end{abstract}
@@ -52,7 +52,7 @@ Our design is sufficient when executing on replicas that might crash and recover
 Global replicated ledgers, also known as \textit{blockchains}, provide the ability for untrusted parties to exchange tokens world-wide, with Bitcoin~\cite{nakamoto2008bitcoin} and Ethereum~\cite{buterin2014next} being the most popular examples. It has been shown that using consensus algorithms to totally order updates across all accounts in replicated ledgers is stronger than necessary to prevent overspending~\cite{guerraoui2021consensus}: sequentially ordering updates on the same account (\textit{e.g.},~\cite{frey:hal-03346756}) and even only the outgoing transactions is sufficient  (\textit{e.g.},~\cite{collins2020broadcast-payment}). Foregoing the use of consensus algorithms drastically increases throughput and decreases latency~\cite{collins2020broadcast-payment,baudet2020fastpay}. Published consensus-free replicated ledgers~\cite{collins2020broadcast-payment,baudet2020fastpay,sliwinski2020abc,guerraoui2021consensus,auvolat2021money,frey:hal-03346756,kuznetsov2021permissionless,cholvi2021bdso,georghiades2021needs} are based on broadcast abstractions that require reliable delivery of account operations. 
 
 % Opportunity of state-based CRDTs
-In parallel to work on replicated ledgers, Conflict-Free Replicated Data Types (CRDTs)~\cite{shapiro:hal-00932836} have been proposed to simplify the design and implementation of distributed systems. CRDTs are replicated mutable objects designed according to simple constraints to ensure convergence to the same state \textit{eventually}, \textit{i.e.}, at some point in the future after updates have stopped, and \textit{automatically}, \textit{i.e.} using deterministic conflict-resolution rules in the presence of concurrent updates. The state-based declination of CRDTs~\cite{shapiro:hal-00932836} requires only 1) eventual transitive delivery of the latest state rather than reliable broadcast of all update operations to all replicas, and 2) a simple merging procedure between different states. The state-based approach tolerates by design lost, re-ordered, stale, and duplicate updates containing copies of other replicas' state.
+In parallel to work on replicated ledgers, Conflict-Free Replicated Data Types (CRDTs)~\cite{shapiro:hal-00932836} have been proposed to simplify the design and implementation of distributed systems. CRDTs are replicated mutable objects designed according to simple constraints to ensure convergence to the same state \textit{eventually}, \textit{i.e.}, at some point in the future after updates have stopped, and \textit{automatically}, \textit{i.e.} using deterministic conflict-resolution rules in the presence of concurrent updates. The state-based declination of CRDTs~\cite{shapiro:hal-00932836} requires only 1) eventual transitive delivery of the latest state rather than reliable broadcast of all update operations to all replicas, and 2) a simple merging procedure between different states. The state-based approach tolerates by design lost, re-ordered, stale, and duplicate updates containing copies of other replicas' state by ensuring the possible states and operations follow a few simple constraints.
 
 In this paper, \textit{we show that a replicated ledger can be implemented as a state-based conflict-free data type based on the composition of grow-only counters}, which we call \textit{Grow-Only-Counters-Ledger} (GOC-Ledger). The key idea is to use a separate grow-only counter for every kind of state-updating operation, which represents the total contribution of all past similar operations to the current balance. For example, a specific grow-only counter is used to track the total amount ever sent  from a sender account to a specific receiver account. The current balance of an account is then computed by adding every balance-increasing counters and subtracting every balance-reducing counters. 
 
@@ -183,16 +183,16 @@ The implementation of the state and corresponding operations is listed in Algori
 
 A replica of an account belonging to owner $id$ is created with \texttt{initialize} (Alg.~\ref{alg:account}). This initializes the internal identifier $A_{\textbf{id}}$ to $id$, the number of created tokens $A_\uparrow$ to $0$, the number of burned tokens $A_\downarrow$ to $0$, the dictionary of given tokens $A_\rightarrow$ to an empty dictionary, and the dictionary of acknowledged tokens $A_\leftarrow$ to an empty dictionary as well.\footnote{The direction of the arrow notation suggests the corresponding direction of funds: up or down for creation or destruction of tokens, and  left or right for tokens flowing into and out of an account.}
 
-The \texttt{create} operation (Alg.~\ref{alg:account}) takes the current state of an account $A$ and a requested \textit{amount} then returns a new state $A'$.\footnote{A practical implementation may actually encapsulate the state of an account in an object and modify it in place. We explicitly associate the different states to different variables to make the labels of the states in proofs (Section~\ref{sec:proofs}) easier to relate to the implementation.} Only allowed creators, \textit{i.e.}, those with ids within the set of allowed identifiers $\mathds{C}$, may create new tokens.\footnote{The set of allowed creator identifiers might be distributed to replicas beforehand or derived from cryptographic mechanisms. The design of such mechanisms is outside the scope of this paper.} If the owner of the account is indeed allowed to create tokens, the creation counter $A'_\uparrow$ is increased by \textit{amount}. This has the effect of increasing the balance of $A$ by \textit{amount}. Otherwise, the counter is unchanged ($A'_\uparrow=A_\uparrow$) and the balance remains the same.
+The \texttt{create} operation (Alg.~\ref{alg:account}) takes the current state of an account $A$ and a requested \textit{amount} then returns a new state $A'$.\footnote{A practical implementation may actually encapsulate the state of an account in an object and modify it in place. We explicitly associate the different states to different variables to make the labels of the states in proofs (Section~\ref{sec:proofs}) easier to relate to the implementation.} Only allowed creators, \textit{i.e.}, those with ids within the set of allowed identifiers $\mathds{C}$, may create new tokens.\footnote{The set of allowed creator identifiers might be distributed to replicas beforehand or derived from cryptographic mechanisms. The design of such mechanisms is outside the scope of this paper.} If the owner of the account is indeed allowed to create tokens, the creation counter is increased by \textit{amount} and $A'_\uparrow = A_\uparrow + \textit{amount}$. This has the effect of increasing the balance by \textit{amount}. Otherwise, the counter is unchanged ($A'_\uparrow=A_\uparrow$) and the balance remains the same.
 
-The \texttt{burn} operation (Alg.~\ref{alg:account}) is similar to \texttt{create} with an opposite effect on the balance: it takes the current state of an account $A$ and a requested \textit{amount} to burn, then returns a new state $A'$. If the balance is equal or larger than \textit{amount}, the burn counter $A'_\downarrow$ is increased by \textit{amount}, and the balance correspondingly decreased by the same amount resulting in a non-negative balance. Otherwise, $A'_\downarrow = A_\downarrow$ and the balance is unchanged. In contrast to \texttt{create}, any account is allowed to burn tokens. Restricting burning tokens to a set of identifiers would also be possible. However, the restriction would not be effective unless transfer operations were also restricted to only valid addresses,\footnote{Giving to an invalid or unused address effectively makes the tokens unavailable, similar to burning.} which in turn would require tracking the set of valid accounts. We therefore take the simpler and more open approach of allowing any account to burn tokens. 
+The \texttt{burn} operation (Alg.~\ref{alg:account}) is similar to \texttt{create} with an opposite effect on the balance: it takes the current state of an account $A$ and a requested \textit{amount} to burn, then returns a new state $A'$. If the balance is equal or larger than \textit{amount}, the burn counter is increased by \textit{amount}, resulting in $A'_\downarrow = A'_\downarrow + \textit{amount}$, and the balance correspondingly decreased by the same amount resulting in a non-negative balance. Otherwise, $A'_\downarrow = A_\downarrow$ and the balance is unchanged. In contrast to \texttt{create}, any account is allowed to burn tokens. Restricting burning tokens to a set of identifiers would also be possible. However, the restriction would not be effective unless transfer operations were also restricted to only valid addresses,\footnote{Giving to an invalid or unused address effectively makes the tokens unavailable, similar to burning.} which in turn would require tracking the set of valid accounts. We therefore take the simpler and more open approach of allowing any account to burn tokens. 
 
 The \texttt{giveTo} operation (Alg.~\ref{alg:account}) sends \textit{amount} tokens from account $A$ to the recipient account associated to $id$, resulting in a new state $A'$. The account state tracks the total amount ever sent to $id$ using the dictionary $A_{\rightarrow}$, using $id$ as a key to access the associated monotonic counter, written $A_{\rightarrow}[id]$. This counter is only increased if the local balance is higher or equal than the \textit{amount} sent, resulting in a non-negative balance for $A'$.
 
 \texttt{Burn} and \texttt{giveTo} are the only two operations on accounts that may decrease the balance. As we prove later by simple induction (Section~\ref{section:proof:sequential-non-negative}), it is sufficient to sequentially order all account operations, potentially across replicas, to guarantee that the balance for that account will always be non-negative. A contrario, as we also discuss next  (Section~\ref{sec:account:ordering-merging}), concurrent updates to the same account in different replicas may eventually result in a negative balance, even if the balance resulting from individual operations was always non-negative.
 
-The \texttt{ackFrom} operation (Alg.~\ref{alg:account}) acknowledges the reception of tokens from account $B$ by account $A$. If there are unacknowledged tokens that $B$ sent to $A$,
-then $A$'s counter $A_{\leftarrow}[B_{\scriptsize \textbf{id}}]$, which tracks the total amount ever acknowledged by $A$ from $B$, is increased by the number of unacknowledged tokens, with a corresponding increase the balance of $A'$. If $A$ had never acknowledged tokens from $B$ before, the new counter value  $A'_{\leftarrow}[B_{\scriptsize \textbf{id}}]$ is simply the total amount ever sent by $B$ to $A$ up to that point, written $B_{\rightarrow}[A_{\scriptsize \textbf{id}}]$. Otherwise, if $A$ had already acknowledged tokens from $B$, the new counter value  $A'_{\leftarrow}[B_{\scriptsize \textbf{id}}]$ is the maximum of the previous value $A_{\leftarrow}[B_{\scriptsize \textbf{id}}]$ and $B_{\rightarrow}[A_{\scriptsize \textbf{id}}]$. This definition correctly handles acknowledging with a stale state  $B^{-1}$ because the corresponding counter $B^{-1}_{\rightarrow}[A_{\scriptsize \textbf{id}}]$ would be equal or smaller than the counter in the most recent state of $B$, $B_{\rightarrow}[A_{\scriptsize \textbf{id}}]$, and therefore $A$ would not be updated. It could also be useful to check that the balance of $B$ was non-negative prior to updating the state of $A$: this would limit the propagation of overspent tokens by $B$\footnote{ This would not completely prevent the propagation because different accounts may have individually acknowledged tokens from B before B's state would reflect the overspending.}. Checking for a non-negative balance from $B$ is however superfluous if the application is actually intended to handle negative balances (Section~\ref{sec:economics}).
+The \texttt{ackFrom} operation (Alg.~\ref{alg:account}) acknowledges the reception of tokens from account $B$ on account $A$. If there are unacknowledged tokens that $B$ sent to $A$,
+then $A$'s counter $A_{\leftarrow}[B_{\scriptsize \textbf{id}}]$, which tracks the total amount ever acknowledged by $A$ from $B$, is increased by the number of unacknowledged tokens, with a corresponding increase the balance of $A'$. If $A$ had never acknowledged tokens from $B$ before, the new counter value  $A'_{\leftarrow}[B_{\scriptsize \textbf{id}}]$ is simply the total amount ever sent by $B$ to $A$ up to that point, written $B_{\rightarrow}[A_{\scriptsize \textbf{id}}]$. Otherwise, if $A$ had already acknowledged tokens from $B$, the new counter value  $A'_{\leftarrow}[B_{\scriptsize \textbf{id}}]$ is the maximum of the previous value $A_{\leftarrow}[B_{\scriptsize \textbf{id}}]$ and $B_{\rightarrow}[A_{\scriptsize \textbf{id}}]$. This definition correctly handles acknowledging with a stale state  $B^{-1}$ because the corresponding counter $B^{-1}_{\rightarrow}[A_{\scriptsize \textbf{id}}]$ would be equal or smaller than the counter in the most recent state of $B$, $B_{\rightarrow}[A_{\scriptsize \textbf{id}}]$, and therefore $A$ would not be updated.\footnote{It could also be useful to check that the balance of $B$ was non-negative prior to updating the state of $A$: this would limit the propagation of overspent tokens by $B$\footnote{ This would not completely prevent the propagation because different accounts may have individually acknowledged tokens from B before B's state would reflect the overspending.}. Checking for a non-negative balance from $B$ is however superfluous if the application is actually intended to handle negative balances (Section~\ref{sec:economics})}.
 
 As follows from the previous explanations, the \texttt{balance} of an account $A$ (Alg.~\ref{alg:query}) is the sum of counters that increase the balance (\textit{debits}) subtracted by the sum of counters that decrease it (\textit{credits}). The \texttt{balance} operation does not modify the state of the account. The debits are the sum of created tokens and the sum of the tokens acknowledged from other accounts. The credits are the sum of tokens burnt and given to other accounts.
 
@@ -203,7 +203,7 @@ The last operation, \texttt{unackedFrom} (Alg.~\ref{alg:query})  returns the num
 
 We now augment our previous account definition with one relation and two operations to enable comparing states, merging concurrently modified states, and reason about the conditions under which the balance of accounts may become negative. The augmented definition forms a \textit{monotonic lattice}, which informally, is a mathematical structure that combines an ordering between states with constraints on operations that captures the notion of progress without having to explicitly reason about time and ordering between different operations. We now present its different components.
 
-The relation $\leq_\mathds{A}$ (Alg.~\ref{alg:account-ordering}) establishes an ordering between states of the same account, \textit{i.e.}, account states with the same id. The operations of the previous section (Alg.~\ref{alg:account} and ~\ref{alg:query}) have been carefully designed to be \textit{monotonic}, \textit{i.e.} they either do not modify the state of an account, or result in a new state $A'$ larger than the previous state $A$ according to $\leq_\mathds{A}$. Because of the monotonicity of the operations, if $A <_\mathds{A} A'$\footnote{$A \leq_\mathds{A} A'$ and $A \neq A'$}, then $A$ has happened before $A'$ and therefore $A'$ also contains all the updates that led to $A$. This ordering is however \textit{partial}: \textit{i.e.} if neither $A <_\mathds{A} A'$ nor $A' <_\mathds{A} A$, then neither $A$ or $A'$ has happened before the other and both are therefore the result of concurrent updates. The relation $A \leq_\mathds{A} A'$ is implemented as follows: it is true if and only if the set of identifiers for given and acknowledged tokens of $A$ are subsets of those $A'$ \textit{and} every counter of $A$ are smaller or equal to the corresponding counters in $A'$. Note that counters in $A'$ not present in $A$ have no effect, because they would be the result of operations that have happened after $A$. 
+The relation $\leq_\mathds{A}$ (Alg.~\ref{alg:account-ordering}) establishes an ordering between states of the same account, \textit{i.e.}, account states with the same id. The operations of the previous section (Alg.~\ref{alg:account} and ~\ref{alg:query}) have been carefully designed to be \textit{monotonic}, \textit{i.e.} they either do not modify the state of an account, or result in a new state $A'$ larger than the previous state $A$ according to $\leq_\mathds{A}$. Because of the monotonicity of the operations, if $A <_\mathds{A} A'$,\footnote{$A \leq_\mathds{A} A'$ and $A \neq A'$} then $A$ has happened before $A'$ and therefore $A'$ also contains all the updates that led to $A$. This ordering is however \textit{partial}: \textit{i.e.} if neither $A <_\mathds{A} A'$ nor $A' <_\mathds{A} A$, then neither $A$ or $A'$ has happened before the other and both are therefore the result of concurrent updates. The relation $A \leq_\mathds{A} A'$ is implemented as follows: it is true if and only if the set of identifiers for given and acknowledged tokens of $A$ are subsets of those of $A'$ \textit{and} every counter of $A$ are smaller or equal to the corresponding counters in $A'$. Note that counters in $A'$ not present in $A$ have no effect, because they would be the result of operations that have happened after $A$. 
 
 \begin{algorithm}
 \begin{algorithmic}[1]
@@ -252,11 +252,11 @@ The relation $\leq_\mathds{A}$ (Alg.~\ref{alg:account-ordering}) establishes an 
 \caption{\label{alg:account-ordering} Account: Ordering and Merging}
 \end{algorithm}
 
-The account merge operation, $\sqcup_\mathds{A}$, (Alg.~\ref{alg:account-ordering}) is also a monotonic operation that combines different states for the same account, possibly resulting from concurrent operations. It computes the smallest state $A''$ from any two states $A$ and $A'$, such that $A''$ is equivalent to having applied the operations that led to both $A$ and $A'$. In mathematical terms, $A''$ is the \textit{least upper bound} of both $A$ and $A'$ according to $\leq_\mathds{A}$. Because it is a least upper bound, merging two states $A$ and $A'$ such that $A$ has happened before $A'$, \textit{i.e.} $A \leq_\mathds{A} A'$, results in a new state $A'' = A'$. This property allows merging with duplicate and out-of-order previous states without impacting the result. Moreover, because a later merged state implicitly contains the updates that led to previous states across replicas, the convergence of all replicas to the same state only requires the latest state of all replicas to have been propagated to other replicas \textit{transitively}, \textit{i.e.} through intermediate replicas, instead of being explicitly broadcasted to all from the source replica as would be necessary for an operation-based replicated ledger~\cite{shapiro:hal-00932836}. The merge operation is implemented by merging all counters from both states and taking the maximum value of those that are present on both states.\footnote{This implementation is not strictly equivalent to merging all operations that have happened across replicas because taking the maximum value of two resulting counter is not equivalent to the sum of increments from their previous common state: \textit{i.e.} if $c' = x + c$ and $c'' = y + c$, $max(c', c'')$ is equal to $c + x + y$ only if $x$ or $y$ is $0$. In effect, the merge effectively considers two concurrent increments as having a shared component that is not duplicated even if done concurrently. This subtle distinction is what enables not having to reason about ordering between operation updates. Concurrent operations on different counters are however equivalent to merging all operations.}
+The account merge operation, $\sqcup_\mathds{A}$, (Alg.~\ref{alg:account-ordering}) is also a monotonic operation that combines different states for the same account, possibly resulting from concurrent operations. It computes the smallest state $A''$ from any two states $A$ and $A'$, such that $A''$ is equivalent to having applied the operations that led to both $A$ and $A'$. In mathematical terms, $A''$ is the \textit{least upper bound} of both $A$ and $A'$ according to $\leq_\mathds{A}$. Because it is a least upper bound, merging two states $A$ and $A'$ such that $A$ has happened before $A'$, \textit{i.e.} $A \leq_\mathds{A} A'$, results in a new state $A'' = A'$. This property allows merging with duplicate and out-of-order previous states without impacting the result. Moreover, because a later merged state implicitly contains the updates that led to previous states across replicas, the convergence of all replicas to the same state only requires the latest state of all replicas to have been propagated to other replicas \textit{transitively}, \textit{i.e.} through intermediate replicas. This requires less messages and better tolerates lost messages than operation-based approaches, which require explicit broadcast of every operation to all replicas~\cite{shapiro:hal-00932836}. The merge operation is implemented by merging all counters from both states and taking the maximum value of those that are present on both states.\footnote{This implementation is not strictly equivalent to merging all operations that have happened across replicas because taking the maximum value of two resulting counter is not equivalent to the sum of increments from their previous common state: \textit{i.e.} if $c' = x + c$ and $c'' = y + c$, $max(c', c'')$ is equal to $c + x + y$ only if $x$ or $y$ is $0$. In effect, the merge effectively considers two concurrent increments as having a shared component that is not duplicated even if done concurrently. This subtle distinction is what enables not having to reason about ordering between operation updates. Concurrent operations on different counters are however equivalent to merging all operations.}
 
-The state and monotonic operations  of Section~\ref{sec:account:state-operations} augmented with the partial ordering induced by relation $\leq_\mathds{A}$ and the account merge operation $\sqcup_\mathds{A}$ is a Conflict-Free Replicated Data Type~\cite{shapiro:hal-00932836} (with proof in Section~\ref{sec:proof:account}) because all replicas are guaranteed to converge to the same state eventually. However, concurrent updates may result in a negative balance: \textit{e.g.}, two concurrent burn and give operations may have a sufficient balance to complete independently and concurrently but not any more after merging the resulting concurrent states.\footnote{As follows from the previous note, if there were no transfers, concurrent burns would never result in a negative balance because only the largest burnt amount, which was locally valid, would be retained instead of the sum of all burnt amounts.} That being said, \textit{only concurrent updates} may result in a negative balance: if all updates are sequential, the pre-condition on crediting operations (Alg.~\ref{alg:account}, line~\ref{ln:burn-balance-check} and \ref{ln:give-balance-check}) prevents the balance from going negative (see proof in Section~\ref{section:proof:sequential-non-negative}).
+The state and monotonic operations  of Section~\ref{sec:account:state-operations} augmented with the partial ordering induced by relation $\leq_\mathds{A}$ and the account merge operation $\sqcup_\mathds{A}$ is a Conflict-Free Replicated Data Type~\cite{shapiro:hal-00932836} (with proof in Section~\ref{sec:proof:account}) because all replicas are guaranteed to converge to the same state eventually. However, concurrent updates may result in a negative balance: \textit{e.g.}, two concurrent burn and give operations may have a sufficient balance to complete independently and concurrently but the combined net previous balance may not be sufficient to cover both.\footnote{As follows from the previous note, if there were no transfers, concurrent burns would never result in a negative balance because only the largest burnt amount, which was locally valid, would be retained instead of the sum of all burnt amounts.} That being said, \textit{only concurrent updates} may result in a negative balance: if all updates are sequential, the pre-condition on crediting operations (Alg.~\ref{alg:account}, line~\ref{ln:burn-balance-check} and \ref{ln:give-balance-check}) prevents the balance from going negative (see proof in Section~\ref{section:proof:sequential-non-negative}).
 
-While not necessary to define a state-based CRDT, we define an additional operation $\sqcap_\mathds{A}$ (Alg.~\ref{alg:account-hlb}) that is the symmetrical opposite of the merge operation: \textit{i.e.}, the \textit{greatest lower bound} of two account states. This definition completes the semi-lattice formed by the $\leq_\mathds{A}$ relation and the $\sqcup_\mathds{A}$ operation into a complete lattice. Informally, $A'' = A \sqcap_\mathds{A} A'$ computes the resulting state $A''$ from the largest overlapping updates that led to both $A$ and $A'$. It is implemented by keeping the minimum value of counters that are present in both states.
+While not necessary to define a state-based CRDT, we define an additional operation $\sqcap_\mathds{A}$ (Alg.~\ref{alg:account-hlb}) that is the symmetrical opposite of the merge operation: \textit{i.e.}, the \textit{greatest lower bound} of two account states. This definition completes the semi-lattice formed by the $\leq_\mathds{A}$ relation and the $\sqcup_\mathds{A}$ operation into a complete lattice. Informally, $A'' = A \sqcap_\mathds{A} A'$ computes the resulting state $A''$ from the largest set of updates that led to both $A$ and $A'$. It is implemented by keeping the minimum value of counters that are present in both states.
 
 We use $\sqcap_\mathds{A}$ to establish the precise conditions under which merging two account states with non-negative balances may result in a new state with a negative balance. Formally, the balance of the merge result of $A$ and $A'$, \textit{i.e.}, \texttt{balance}($A \sqcup_\mathds{A} A'$), will be negative if and only if the sum of differences in credits between $A$ and $A'$ is larger than the sum of differences in debits between $A$ and $A'$, and \texttt{balance}($A \sqcap_\mathds{A} A'$) was sufficiently low (see proof in Section~\ref{sec:proofs:merge-concurrent-accounts}). Informally, there must have been more credits issued than debits received from the non-overlapping updates implicitly contained in $A$ and $A'$, as well as not enough reserves to cover the difference.
 
@@ -343,7 +343,7 @@ The compare relation for ledger states $L$, and $L'$, written $L \leq_L L'$, ret
 The merge operation between ledger states $L$ and $L'$, written $L'' = L \sqcup_L L'$, returns a new ledger state $L''$ that is the smallest state according to $\leq_L$ that is also larger than both $L$ and $L'$. It is implemented by taking 1) the union of all keys (identifiers) on both $L$ and $L'$ and 2) associating each keys to the most up-to-date corresponding account state. The second is implemented with the merge operation on accounts ($\sqcup_A$, Alg.~\ref{alg:account-ordering}) if the account is present in both states, otherwise it takes the state of the account either in $L$ or $L'$, whichever is present.
 
 
-This ledger design is also a Conflict-Free Replicated Data Type (see proof in Section~\ref{sec:proof:ledger}) because all replicas are guaranteed to converge to the same state eventually. To the exception of the possibility that accounts may have negative balance, there is no additional issue related to concurrency: any concurrent account updates will result in a valid ledger.
+This ledger design is also a Conflict-Free Replicated Data Type (see proof in Section~\ref{sec:proof:ledger}) because all replicas are guaranteed to converge to the same state eventually. To the exception of the possibility that accounts may have negative balance, there is no additional issue related to concurrency: any concurrent account updates will result in a correct ledger. We outline the exact safety and liveness conditions on balances shortly in Section~\ref{sec:safety-liveness}.
 
 \subsection{Compatible System Models}
 
@@ -353,9 +353,11 @@ Our design is however not compatible with adversarial replicas because the latte
 
 
 \subsection{Safety and Liveness Properties of Account Balances}
+\label{sec:safety-liveness}
 
+We now outline the balance safety and liveness conditions of our design.
 
-Given a set $\mathcal{A}$ of the largest state of every account (differentiated by $id$) across replicas and a set $\mathcal{C \subseteq \mathcal{A}}$ of accounts allowed to create tokens, the tokens circulating between accounts with non-negative balance either were created or were overspent but not burnt. Formally, the following equality always hold and is therefore a safety property of the design (see proof in Section~\ref{sec:proof:balance-safety}):
+Given a set $\mathcal{A}$ of the largest state of every account (differentiated by $id$) across replicas and a set $\mathcal{C \subseteq \mathcal{A}}$ of accounts allowed to create tokens, the tokens circulating between accounts with non-negative balances either were created or were overspent but not burnt. Formally, the following equality always hold and is therefore a safety property of the design (see proof in Section~\ref{sec:proof:balance-safety}):
 
 \begin{equation}
 \label{eq:balance-safety}
@@ -380,16 +382,16 @@ A slight variation replacing $\mathcal{A}$ by a ledger $L$ such that $\texttt{va
 		+ \sum\limits_{A \in \texttt{values}(L)^{< 0}}  -\texttt{balance}(A)
 \end{eqnarray*}
 
-This is the case, because whatever the state of sender accounts, they cannot influence the balance of other accounts unless the tokens they sent were first acknowledged. If $L$ is not a transitive closure of accounts, the inequality may or may not hold: \textit{e.g.}, if $\mathcal{A}$ contains only two accounts $A$ and $C$ with different ids such that $C \in \mathcal{C}$, $A \notin \mathcal{C}$, $\texttt{values}(L) = \{ A \}$, and $C$ has given tokens to $A$.
+This is the case because whatever the state of sender accounts, they cannot influence the balance of other accounts unless the tokens they sent were first acknowledged. If $L$ is not a transitive closure of accounts, the inequality may or may not hold: \textit{e.g.}, if $\mathcal{A}$ contains only two accounts $A$ and $C$ with different ids such that $C \in \mathcal{C}$, $A \notin \mathcal{C}$, $\texttt{values}(L) = \{ A \}$, and $C$ has given tokens to $A$, then it does not hold.
 
-The inequality still holds for accounts states in the ledger that are not the latest among all leders, as long as the state of every sender accounts $S$ in $L$ is greater or equal than they were at the time the receiver account $R$ acknowledged receiving the token, which is true if and only if $R_{\leftarrow}[S_{\scriptsize \textbf{id}}] \leq S_{\rightarrow}[R_{\scriptsize \textbf{id}}]$. This is always the case in concurrent execution in which all operations we presented for ledgers and accounts terminate.
+The inequality still holds for account states in the ledger that are not the latest among all replicas, as long as the state of every sender accounts $S$ in $L$ is greater or equal than they were at the time the receiver account $R$ acknowledged receiving the token. This is true if and only if $R_{\leftarrow}[S_{\scriptsize \textbf{id}}] \leq S_{\rightarrow}[R_{\scriptsize \textbf{id}}]$. This is always the case in concurrent execution in which all operations we presented for ledgers and accounts terminate but may not hold after a partial replication, as would happen if the merge operation between two ledger states were interrupted.
 
-Finally, all the previous inequality are eventually turned into strict equalities if every receiver account eventually acknowledges the tokens that were sent (see proof in Section~\ref{sec:proof:balance-liveness}). Replacing the safety property from an equality into an inequality is a key insight that allows an eventually consistent implementation of a ledger.
+Finally, all the previous inequalities are eventually turned into strict equalities if every receiver account eventually acknowledges the tokens that were sent (see proof in Section~\ref{sec:proof:balance-liveness}). Using an inequality as a safety property, instead of enforcing the equality after each update, allows an eventually consistent implementation of a ledger.
 
 \section{Proofs}
 \label{sec:proofs}
 
-In this section, we prove the properties discussed informally in Section~\ref{sec:design}.
+In this section, we prove the properties discussed informally in Section~\ref{sec:design}. To make the proofs more accessible to practitioners and non-mathematicians, we follow the structured proof approach suggested by Lamport~\cite{lamport2012write}.
 
 \subsection{Definitions}
 
@@ -406,9 +408,9 @@ We first make the semantics of algorithms more precise with the following defini
 	\end{pfenum}
 \end{proof}
 
-Note that because all replicas converge to the same state does not mean that the balances on all replicas are guaranteed to always be positive for any possible concurrent operations. We therefore discuss safety properties related to the balance separately in Section~\ref{sec:proof:balance}.
-
 \subsection{Lemmas}
+
+In this section, we prove one lemma that is used later to simplify a proof.
 
 \subsubsection{The composition of least upper bounds is a least upper bound.}
 \label{sec:lemma:lub-composition}
@@ -418,15 +420,15 @@ Note that because all replicas converge to the same state does not mean that the
 		\item $\mathds{A}$ and $\mathds{B}$ are sets
 		\item Binary relations $\leq_\mathds{A}$ and $\leq_\mathds{B}$ define semi-lattices $\mathds{S}_\mathds{A}$ and $\mathds{S}_\mathds{B}$
 		\item Equality $=$ relationship exists for $\mathds{A}$ and $\mathds{B}$
-		\item $a <_\mathds{A} a' \Leftrightarrow a \leq_\mathds{A} \wedge~ a \neq a'$ and $b <_\mathds{B} b' \Leftrightarrow a \leq_\mathds{B} \wedge~ b \neq b'$
 		\item Binary operators $\alpha$ and $\beta$ compute least upper bounds, respectively in $\mathds{S}_\mathds{A}$ and $\mathds{S}_\mathds{B}$
 	\end{pfenum}}
 	\define{\begin{pfenum}
-		\item $\mathds{C} = \mathds{A} \times \mathds{B}$, \textit{i.e.} the cartesian product of $\mathds{A}$ and $\mathds{B}$ such that $C \in \mathds{C} \Rightarrow (C = (a,b)) \wedge a \in \mathds{A} \wedge b \in \mathds{B}$
+		\item $a <_\mathds{A} a' \defeq a \leq_\mathds{A} \wedge~ a \neq a'$ and $b <_\mathds{B} b' \defeq a \leq_\mathds{B} \wedge~ b \neq b'$
+		\item $\mathds{C} = \mathds{A} \times \mathds{B}$, \textit{i.e.}, the cartesian product of $\mathds{A}$ and $\mathds{B}$ such that $C \in \mathds{C} \Rightarrow (C = (a,b)) \wedge a \in \mathds{A} \wedge b \in \mathds{B}$
 		\item $C \leq_\mathds{C} C' \Leftrightarrow (a,b) \leq_\mathds{C} (a',b') \Leftrightarrow a \leq_\mathds{A} a' \wedge~ b \leq_\mathds{B} b'$ which defines a semi-lattice $\mathds{S}_\mathds{C}$
-		\item $C = C'  \Leftrightarrow (a,b) = (a',b') \Leftrightarrow a = a' \wedge b = b'$
-		\item $C <_\mathds{C} C'  \Leftrightarrow C \leq_\mathds{C} C' \wedge C \neq C'$
-		\item $C ~\tau~ C' \Leftrightarrow (a,b)~\tau~(a',b') \Leftrightarrow (a~\alpha~a', b~\beta~b')$
+		\item $C = C'  \Leftrightarrow (a,b) = (a',b') \defeq a = a' \wedge b = b'$
+		\item $C <_\mathds{C} C'  \defeq C \leq_\mathds{C} C' \wedge C \neq C'$
+		\item $C ~\tau~ C' \Leftrightarrow (a,b)~\tau~(a',b') \defeq (a~\alpha~a', b~\beta~b')$
 	\end{pfenum}}
 	\prove{$C''  = C ~\tau~ C'$ is the least upper bound of $C$ and $C'$ in $\mathds{S}_\mathds{C}$}
 	
@@ -438,13 +440,13 @@ Note that because all replicas converge to the same state does not mean that the
 			By definition.
 		\end{proof}
 		
-		\step{lbl:lub:def-1:1}{$a \leq_\mathds{A} (a ~\alpha~ a') = a \leq_\mathds{A} a''$}
+		\step{lbl:lub:def-1:1}{$a \leq_\mathds{A} (a ~\alpha~ a') = a''$}
 		\begin{proof}
 			By assumption on $\alpha$ and the definition of least upper bound.
 		\end{proof}
 		
 		
-		\step{lbl:lub:def-1:2}{$b \leq_\mathds{B} (b ~\beta~ b') = b \leq_\mathds{B} b''$}
+		\step{lbl:lub:def-1:2}{$b \leq_\mathds{B} (b ~\beta~ b') = b''$}
 		\begin{proof}
 			By assumption on $\beta$ and the definition of least upper bound.
 		\end{proof}
@@ -498,15 +500,15 @@ Note that because all replicas converge to the same state does not mean that the
 
 \subsection{Convergence}
 
-To establish convergence, we need to establish that the states of the design form a \textit{monotonic semi-lattice}~\cite{shapiro:hal-00932836}, which involves three propositions: First, that all possible ledger states can be organized in a semi-lattice $\mathds{S}_\mathds{L}$ ordered by $\leq_\mathds{L}$. This is a requisite for the next two properties. Second, that merging two ledger states $L$ and $L'$ computes the \textit{Least Upper Bound} (LUB) of $L$ and $L'$ in $\mathds{S}_\mathds{L}$. This ensures that the merge is \textit{commutative}, \textit{associative}, and \textit{idempotent}, providing \textit{safety}, \textit{i.e.}, that replicas will agree on the final state regardless of ordering, delays, or duplication of merge operations. Third, that all operations modify the state $L$ of a replica such that the new state $L'$ is either equal or larger than the previous state $L$ in $\mathds{S}_\mathds{L}$ (\textit{monotonicity}). This ensures all state changes will be eventually reflected in the new state of all replicas, either because the same update(s) will have concurrently been applied or because the new state will be the result of a merge. Assuming an underlying communication medium that ensures new states to be eventually delivered to other replicas, the three propositions combined ensure both \textit{liveness} and \textit{safety}: all state changes are going to be replicated on all replicas \textit{and} all replicas will agree on the final state automatically, i.e. \textit{strong eventual consistency}~\cite{shapiro:hal-00932836}.
+To establish the convergence of both accounts and ledger, we need to establish that their states form a \textit{monotonic semi-lattice}~\cite{shapiro:hal-00932836}, which involves three propositions: First, that all possible states can be organized in a semi-lattice $\mathds{S}$ ordered by $\leq$. This is a requisite for the next two properties. Second, that merging two states computes their \textit{Least Upper Bound} (LUB) in $\mathds{S}$. This ensures that the merge is \textit{commutative}, \textit{associative}, and \textit{idempotent}, providing \textit{safety}, \textit{i.e.}, that replicas will agree on the final state regardless of ordering, delays, or duplication of merge operations. Third, that all operations modify the state $S$ of a replica such that the new state $S'$ is either equal or larger than the previous state $S$ in $\mathds{S}$ (\textit{monotonicity}). This ensures all state changes will be eventually reflected in the new state of all replicas, either because the same update(s) will have concurrently been applied or because the new state will be the result of a merge. Assuming an underlying communication medium that ensures new states to be eventually delivered to other replicas, the three propositions combined ensure both \textit{liveness} and \textit{safety}: all state changes are going to be replicated on all replicas \textit{and} all replicas will agree on the final state automatically, i.e. \textit{strong eventual consistency}~\cite{shapiro:hal-00932836}.
 
-Because an account state is the composition of \textit{grow-only counters} ($A_\uparrow$ and $A_\downarrow$) and \textit{grow-only dictionaries of grow-only counters}~\cite{lavoie2023statebased} ($A_\leftarrow$ and $A_\rightarrow$), and the ledger state is a \textit{grow-only dictionary of accounts}, the convergence proofs are straight-forward. We first prove that account replicas converge, then prove that ledgers converge as well. To make the proofs more accessible to practitioners and non-mathematicians, we follow the structured proof approach suggested by Lamport~\cite{lamport2012write}.
+Because an account state is the composition of \textit{grow-only counters} ($A_\uparrow$ and $A_\downarrow$) and \textit{grow-only dictionaries of grow-only counters}~\cite{lavoie2023statebased} ($A_\leftarrow$ and $A_\rightarrow$), and the ledger state is a \textit{grow-only dictionary of accounts}, the convergence proofs are straight-forward. We first prove that account replicas converge, then prove that ledgers converge as well.
 
 \subsubsection{Account}
 \label{sec:proof:account}
 
 \begin{proof}
-        \prove{The Account design listed in Alg.~\ref{alg:account} and Alg.~\ref{alg:account-ordering} is a state-based (convergent) CRDT.}
+        \prove{The Account design listed in Alg.~\ref{alg:account}, ~\ref{alg:query}, and \ref{alg:account-ordering} is a state-based (convergent) CRDT.}
 	\pfsketch ~An account is the composition of state-based grow-only counters and grow-only dictionaries of grow-only counters. The three properties of \textit{ordering}, \textit{least upper bound}, and \textit{monotonicity} that are sufficient to define a state-based CRDT are the conjunction of corresponding properties on grow-only counters and grow-only dictionaries of grow-only counters.
 \end{proof}
 
@@ -612,7 +614,7 @@ Because an account state is the composition of \textit{grow-only counters} ($A_\
 		
 		\step{}{\case{$A' = \texttt{ackFrom}(A,B)$}}
 		\begin{proof}
-			\step{}{\case{$A_{\scriptsize \textbf{id}} \in B_{\rightarrow *} \wedge \texttt{balance}(B) \geq 0$}}
+			\step{}{\case{$A_{\scriptsize \textbf{id}} \in B_{\rightarrow *}$}}
 			\begin{proof}
 				\step{}{\case{$B_{\scriptsize \textbf{id}} \notin A_{\leftarrow *}$}}
 				\begin{proof}
@@ -625,7 +627,7 @@ Because an account state is the composition of \textit{grow-only counters} ($A_\
 				\end{proof} 
 			\end{proof}
 			
-			\step{}{\case{$A_{\scriptsize \textbf{id}} \notin B_{\rightarrow *} \vee \texttt{balance}(B) < 0$}}
+			\step{}{\case{$A_{\scriptsize \textbf{id}} \notin B_{\rightarrow *}$}}
 			\begin{proof}
 				$A=A'$
 			\end{proof}
@@ -667,7 +669,9 @@ Because an account state is the composition of \textit{grow-only counters} ($A_\
 \prove{The ledger of Algorithm~\ref{alg:ledger} is a state-based (convergent) conflict-free replicated data type.}
 \begin{proof}
 	\pfsketch~ The ledger is a grow-only dictionary of accounts, that are themselves state-based CRDTs.
+
 	
+\pf~		
 	\step{lbl:ledger:ordering}{
 		\textbf{Ordering:} 
 		Ordering $\mathds{L}$ by $\leq_\mathds{L}$ (Alg.~\ref{alg:ledger}) forms a semi-lattice $\mathds{S}_\mathds{L}$.
@@ -717,13 +721,13 @@ Because an account state is the composition of \textit{grow-only counters} ($A_\
 		
 		\step{lbl:ledger:lub:def-3}{$\nexists L''' \in \mathds{L} : L \leq_\mathds{L} L''' \wedge L' \leq_\mathds{L} L''' \wedge L''' <_\mathds{L} L''$}
 		\begin{proof}
+			\pfsketch~ We show that both of the only two possible conditions which individually could make the proposition false are not possible, therefore the proposition is always true. 
 			\step{lbl:ledger:lub:def-3:ids}{It is not possible for $L_* \subseteq L'''_* \wedge L'_* \subseteq L'''_* \wedge L'''_* \subset L''_*$. }
 			\begin{proof}
 				$L''_* = L_* \cup L'_*$ is the least upper-bound of $L_*$ and $L'_*$ in $\mathds{S}_{\mathcal{P}(\mathds{I})}$ ordered by $\subseteq$ because $\cup$ computes the least upper bound on sets of identifiers (see \cite{lavoie2023statebased}).  
 			\end{proof}
-			
 			\step{lbl:ledger:lub:def-3:accounts}{
-				\assume{$L'''_* \subseteq L''_*$ (otherwise it is not possible for $L''' \leq_\mathds{L} L''$)}
+				\assume{$L'''_* \subseteq L''_*$ (otherwise it is not possible for $L''' <_\mathds{L} L''$)}
 				\prove{$\forall_{\textit{id} \in L'''_*}$, it is not possible for $L'''[\textit{id}]  <_\mathds{A} L''[\textit{id}]$ and $L[\textit{id}] \leq_\mathds{A} L'''[\textit{id}]$ (if $id \in L_*$) and $L'[\textit{id}] \leq_\mathds{A} L'''[\textit{id}]$  (if $id \in L'_*$)} }
 			\begin{proof}
 				\step{}{\case{$\textit{id} \in L_* \wedge \textit{id} \notin L'_*$}}
@@ -740,11 +744,16 @@ Because an account state is the composition of \textit{grow-only counters} ($A_\
 				\begin{proof}
 					$L''[\textit{id}] = L[\textit{id}] \sqcup_\mathds{A} L'[\textit{id}] = \textit{LUB}(L[\textit{id}], L'[\textit{id}])$
 				\end{proof}
+				
+				\qedstep
+				\begin{proof}
+					Either $L''[id]$ is a least upper bound of $L[id]$ or $L''[id]$, or is equal to one or the other, therefore it is not possible.
+				\end{proof}
 			\end{proof}
 			
 			\qedstep
 			\begin{proof}
-				Because both \stepref{lbl:ledger:lub:def-3:ids} and \stepref{lbl:ledger:lub:def-3:accounts} are sufficient conditions (no other condition could make the proposition true). 
+				 \stepref{lbl:ledger:lub:def-3:ids} and \stepref{lbl:ledger:lub:def-3:accounts} are the only two possible conditions which individually could make the proposition false, and they are are not possible, therefore the proposition is always true. 
 			\end{proof}
 		\end{proof}
 		
@@ -773,7 +782,7 @@ Because an account state is the composition of \textit{grow-only counters} ($A_\
 			
 			\step{}{\case{$A_{\scriptsize \textbf{id}} \in L_*$}}
 			\begin{proof}
-				$L_* = L'_*$, $L[A_{\scriptsize \textbf{id}}] \leq_\mathds{A} L[A_{\scriptsize \textbf{id}}] \sqcup_\mathds{A} A =  L'[A_{\scriptsize \textbf{id}}]$, and all other properties of $L'$ are equal to those of $L$.
+				$L_* = L'_*$, $L[A_{\scriptsize \textbf{id}}] \leq_\mathds{A} (L[A_{\scriptsize \textbf{id}}] \sqcup_\mathds{A} A) =  L'[A_{\scriptsize \textbf{id}}]$, and all other properties of $L'$ are equal to those of $L$.
 			\end{proof}
 		\end{proof}
 			
@@ -801,18 +810,20 @@ Because an account state is the composition of \textit{grow-only counters} ($A_\
 	\end{proof}
 \end{proof}
 
-\subsection{Highest Lower-Bound on Accounts}
+\subsection{Greatest Lower-Bound on Accounts}
 \label{sec:hlb}
 
 \assume{\begin{pfenum}
-	\item $A_{\scriptsize \textbf{id}} \in \mathds{A}$
-	\item $A'_{\scriptsize \textbf{id}} \in \mathds{A}$
+	\item $A \in \mathds{A}$
+	\item $A' \in \mathds{A}$
 	\item $A_{\scriptsize \textbf{id}} = A'_{\scriptsize \textbf{id}}$
 \end{pfenum}}
 \prove{\textbf{Highest Lower Bound:} $A'' = A \cap_\mathds{A} A'$ (Algorithm~\ref{alg:account-hlb}) is the highest lower bound of $A$ and $A'$ in $\mathds{S}_\mathds{A}$.}
-\pfsketch~	The \texttt{minimum} function computes the upper least bound on numbers. The intersection ($\cap$) computes the upper least bound on sets of identifiers. The composition of highest least bounds is also a highest least bound on the cartesian products of domains (proof is similar to that for highest lower bound of Section~\ref{sec:lemma:lub-composition}). $\cap_\mathds{A}$ is a composition of \texttt{min} on grow-only counters an $\cap$ on sets of identifiers, therefore it also computes an upper least bound.
+\pfsketch~	The \texttt{minimum} function computes the greatest lower bound on numbers. The intersection ($\cap$) computes the greatest lower bound on sets of identifiers. The composition of greatest lower bounds is also a greatest lower bound on the cartesian products of domains (proof is similar to that for lowest upper bound of Section~\ref{sec:lemma:lub-composition}). $\cap_\mathds{A}$ is a composition of \texttt{min} on grow-only counters an $\cap$ on sets of identifiers, therefore it also computes an greatest lower bound.
 \begin{proof}
-Alternatively a direct proof, using the definition of upper least bound:
+	
+\pf~	
+Alternatively a direct proof, using the definition of greatest lower bound:
 	\step{lbl:hlb-1}{$A'' \leq_\mathds{A} A$}
 	\begin{proof}
 		\step{lbl:hlb-1-1}{$A''_\downarrow = \texttt{min}(A_\downarrow, A'_\downarrow) \leq A_\downarrow$ \newline
@@ -824,14 +835,14 @@ Alternatively a direct proof, using the definition of upper least bound:
 		}
 		
 		\step{lbl:hlb-1-3}{
-			\assume{\begin{pfenum}
-				\item $id \in A_{\leftarrow *} \wedge id \in A'_{\leftarrow *}$
-			\end{pfenum}}
+			\assume{
+				$id \in A_{\leftarrow *} \wedge id \in A'_{\leftarrow *}$
+			}
 			$A''_{\leftarrow}[id] = \texttt{min}(A_{\leftarrow}[id], A'_{\leftarrow}[id]) \leq A_{\leftarrow}[id]$
 			
-			\assume{\begin{pfenum}
-				\item $id \in A_{\rightarrow *} \wedge id \in A'_{\rightarrow *}$
-			\end{pfenum}}
+			\assume{
+				$id \in A_{\rightarrow *} \wedge id \in A'_{\rightarrow *}$
+			}
 			$A''_{\rightarrow}[id] = \texttt{min}(A_{\rightarrow}[id], A'_{\rightarrow}[id]) \leq A_{\rightarrow}[id]$
 		}
 		
@@ -871,7 +882,7 @@ Alternatively a direct proof, using the definition of upper least bound:
 	
 	\qedstep
 	\begin{proof}
-		The conjunction of \stepref{lbl:hlb-1}, \stepref{lbl:hlb-2}, and \stepref{lbl:hlb-3} is the definition of a highest lower bound.
+		The conjunction of \stepref{lbl:hlb-1}, \stepref{lbl:hlb-2}, and \stepref{lbl:hlb-3} is the definition of a greatest lower bound.
 	\end{proof}
 \end{proof}
 
@@ -880,6 +891,7 @@ Alternatively a direct proof, using the definition of upper least bound:
 \subsection{Balance}
 \label{sec:proof:balance}
 
+In this section we present proofs related to the balance of accounts.
 
 \subsubsection{Sequences of Account Operations Maintain a Non-Negative Balance}
 \label{section:proof:sequential-non-negative}
@@ -895,8 +907,9 @@ Alternatively a direct proof, using the definition of upper least bound:
 \prove{For any sequence of operations on $A$ resulting in a new state $A'$, $\texttt{balance}(A') \geq 0$.}
 \begin{proof}
 \pfsketch~ By induction.
-	For every case that modify the state of $A$, we list the properties that have changed between the original state of an account, and its following states marked with $'$, that influence the balance computation. Every non-listed properties stays the same.
-		
+	For every case that modifies the state of $A$, we list the properties that have changed between the original state of an account, and its following states (marked with $'$), that influence the balance computation. Every non-listed properties stays the same.
+	
+\pf~		
 	\step{seq:nn-bal:create}{\case{$A' = \texttt{create}(A,x)$}}
 	\begin{proof}
 		\step{}{\case{$A_{\scriptsize \textbf{id}} \in \mathds{C} \wedge x > 0$}}
@@ -1008,6 +1021,15 @@ Alternatively a direct proof, using the definition of upper least bound:
 \subsubsection{Merging Non-negative Accounts May Result in a Negative Balance}
 \label{sec:proofs:merge-concurrent-accounts}
 
+It is somewhat obvious that if there is no restriction, giving the same tokens to different recipients (concurrently) may lead to a negative balance after merging the resulting states. However, it was not completely obvious how to precisely formulate this intuition in a state-based model. 
+
+The first insight was to look at the difference between credits and debits in both states, which is expressed as $\Delta$ below. However, this was not sufficient because the final negative condition on the balance depends on another previous state: if the balance in the previous state is sufficiently high, even if more credits are made than debits received, the final balance would still be positive. 
+
+The second and missing insight was that none of the states being compared can be used as the previous state: instead, one must extract the common part with the $\sqcap_\mathds{A}$ operator, which intuitively represents the longuest "overlapping" or common operations that led to both. This concepts covers both the largest state that actually happened before both $A$ and $A'$ as well as similar operations that happened independently on both $A$ and $A'$ that led to similar state changes. For example, consider the following execution: two replicas of the same account (same id) are initialized independently. Then 10 tokens are created on both independently, without merging after. Then on one replica 6 tokens are given to Bob resulting in $A$ and on the other replica 5 tokens are given to Alice resulting in $A'$. Even though the replicas never merged, there is still a shared part in the state which is $A \sqcap_\mathds{A} A'$ with the creation counter with a value of 10 tokens.
+
+The power, but also the difficulty, in this formulation is that it abstract multiple kinds of histories that may lead to the same state. But it also connects to our regular intuition when $A \sqcap_\mathds{A} A'$ has a balance of 0, as is the case in the initial state: then the balance of the merged states will be negative if and only if there has been more credits issued than debits received. The proof itself follows easily from the two insights.
+
+
 \define{\begin{pfenum}
 	\item $A \in \mathds{A} : \texttt{balance}(A) \geq 0$
 	\item $A' \in \mathds{A} : \texttt{balance}(A') \geq 0$
@@ -1020,7 +1042,9 @@ Alternatively a direct proof, using the definition of upper least bound:
 \assume{$A_{\scriptsize \textbf{id}} = A'_{\scriptsize \textbf{id}}$}
 \prove{$\texttt{balance}(A \sqcup_\mathds{A} A') < 0 \Leftrightarrow  \Delta_\downarrow  + \Delta_\rightarrow >  \Delta_\uparrow  + \Delta_\leftarrow + \texttt{balance}(A \sqcap_\mathds{A} A')$}
 \begin{proof}
-
+\pfsketch~ The key idea is that the maximum between two counters is equal to the min of the two plus their absolute difference and the rest follows from algebric manipulations.
+	
+\pf~	
 	\step{lbl:eq}{$\texttt{balance}(A \sqcup_\mathds{A} A') = \texttt{balance}(A \sqcap_\mathds{A} A') +  \Delta_\uparrow  + \Delta_\leftarrow  - \Delta_\downarrow  - \Delta_\rightarrow$}
 	\begin{proof}
 		\step{lbl:min-max-eq}{\assume{\begin{pfenum}
@@ -1154,6 +1178,11 @@ Alternatively a direct proof, using the definition of upper least bound:
 \subsubsection{Safety: Net Tokens Owned were Created or Overspent, and not Burnt}
 \label{sec:proof:balance-safety}
 
+This safety property, expressed as an inequality instead of as an equality, is a key ingredient in making the design eventually consistent because this way the transfer of tokens between a sender and receivers is decomposed into two actions that allow the states of the sender and receiver accounts to be modified independently. Remarkably, this is possible even though there is a causal dependency between sending and receiving, which is enforced by checking that the sender counter is larger than the corresponding and symmetric receiver counter is increased (up to the same amount).
+
+Moreover, we have two major differences compared to other works: 1) we track the creation of tokens within the same account abstraction, therefore we do not only enforce that sent tokens are eventually equal to received tokens globally; and 2) we also show the effect of overspent tokens in the inequality, which is that they increase the supply.  Surprisingly to us initially, the second aspect does not appear unless the accounts are segregated between those with a positive balance and those with a negative balance because the sending and reception of overspent tokens cancel each other if we sum the balances of all accounts. We therefore segregated accounts according to their balance in the inequality so that the right-hand side would correspond to net supply in circulation and the left-hand side would correspond to the net amount of tokens owned.
+
+In our definitions below, we take a global view and reason over the global latest state of every account, regardless of the state of the local ledger replicas. This is the most general and intuitive stance. More restricted local views as discussed in the previous section follow easily from this so we only give the proof for the global case.
 
 \define{\begin{pfenum}
 	\item $\mathcal{L}$ is the set of all ledger replicas at any time
@@ -1169,6 +1198,8 @@ Alternatively a direct proof, using the definition of upper least bound:
 		- \sum\limits_{A \in \mathcal{A}} A_\downarrow 
 		+ \sum\limits_{A \in \mathcal{A}^{< 0}}  -\texttt{balance}(A) $.}
 \begin{proof}
+	
+\pf~	
 	\step{}{$\sum\limits_{A \in \mathcal{A}} \texttt{balance}(A) \leq  
 		\sum\limits_{C \in \mathcal{C}} C_\uparrow 
 		- \sum\limits_{A \in \mathcal{A}} A_\downarrow$}
@@ -1208,7 +1239,7 @@ Alternatively a direct proof, using the definition of upper least bound:
 	\end{proof}
 \end{proof}
 
-\subsubsection{Liveness: Eventual Balance Equality}
+\subsubsection{Liveness: Eventual Balance Reconciliation}
 \label{sec:proof:balance-liveness}
 
 \define{~Same definitions as previous section.}
@@ -1217,7 +1248,7 @@ Alternatively a direct proof, using the definition of upper least bound:
 		\sum\limits_{C \in \mathcal{C}} C_\uparrow 
 		- \sum\limits_{A \in \mathcal{A}} A_\downarrow 
 		+ \sum\limits_{A \in \mathcal{A}^{< 0}}  -\texttt{balance}(A) $.}
-\pf~ If all receiver accounts $R \in \mathcal{A}$ eventually acknowledge all amounts sent from sender accounts $S \in \mathcal{A}$ to $R$, then eventually $R_{\leftarrow}[S_{\scriptsize \textbf{id}}] = S_{\rightarrow}[R_{\scriptsize \textbf{id}}]$. This turns the inequality from the previous section into an equality.
+\pf~ If all receiver accounts $R \in \mathcal{A}$ eventually acknowledge all amounts sent from sender accounts $S \in \mathcal{A}$ to $R$, then eventually $R_{\leftarrow}[S_{\scriptsize \textbf{id}}] = S_{\rightarrow}[R_{\scriptsize \textbf{id}}]$.  This turns the inequality from the previous section into an equality.
 
 
 \section{Related Work}
@@ -1349,8 +1380,8 @@ Apart from these, we use common mathematical and pseudo-code conventions:
 	 \item $\sum$ is a summation;
 	 \item $\sum\limits_{x \in X} x$ is the sum of all elements in $X$;
 	 \item $\leq$ is smaller or equal;
-	 \item $\bigwedge$ and $\textbf{and}$ both represent a logical \textit{and};
-	 \item $\bigwedge\limits_{x \in X} x$ is the logical and between all elements in $X$;
+	 \item $\bigwedge$ and '$\textbf{and}$' both represent a logical \textit{and};
+	 \item $\bigwedge\limits_{x \in X} x$ is the logical 'and' between all elements in $X$;
 	 \item $\textbf{for}~x ~\textbf{in}~ X~\textbf{do}$ iterates over all values in $X$ sequentially assigning them to $x$.
 \end{itemize}
 
