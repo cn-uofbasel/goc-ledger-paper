@@ -825,7 +825,7 @@ Because an account state is the composition of \textit{grow-only counters} ($A_\
 	\item $A' \in \mathds{A}$
 	\item $A_{\scriptsize \textbf{id}} = A'_{\scriptsize \textbf{id}}$
 \end{pfenum}}
-\prove{\textbf{Highest Lower Bound:} $A'' = A \cap_\mathds{A} A'$ (Algorithm~\ref{alg:account-hlb}) is the highest lower bound of $A$ and $A'$ in $\mathds{S}_\mathds{A}$.}
+\prove{\textbf{Greatest Lower Bound:} $A'' = A \cap_\mathds{A} A'$ (Algorithm~\ref{alg:account-hlb}) is the greatest lower bound of $A$ and $A'$ in $\mathds{S}_\mathds{A}$.}
 \pfsketch~	The \texttt{minimum} function computes the greatest lower bound on numbers. The intersection ($\cap$) computes the greatest lower bound on sets of identifiers. The composition of greatest lower bounds is also a greatest lower bound on the cartesian products of domains (proof is similar to that for lowest upper bound of Section~\ref{sec:lemma:lub-composition}). $\cap_\mathds{A}$ is a composition of \texttt{min} on grow-only counters an $\cap$ on sets of identifiers, therefore it also computes an greatest lower bound.
 \begin{proof}
 	
